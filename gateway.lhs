@@ -57,9 +57,9 @@ Open a handle to the Tokyo Cabinet database that we're going to use for storing 
 
 > 	db <- openTokyoCabinet "./db.tcdb"
 
-Create a TChan that will be used to queue up stanzas for sending out through the component connection.
+Create a channel that will be used to queue up stanzas for sending out through the component connection.
 
-> 	componentOut <- atomically newTChan
+> 	componentOut <- atomically newTQueue
 
 Now we connect up the component so that stanzas will be routed to us by the server.
 Run in a background thread and reconnect forever if `runComponent` terminates.
@@ -77,13 +77,13 @@ Catch any exceptions, and log the result on termination, successful or not.
 
 This is where we handle talking to the XMPP server.
 
-> component :: TC.HDB -> TChan StanzaRec -> XMPP.XMPP ()
+> component :: TC.HDB -> TQueue StanzaRec -> XMPP.XMPP ()
 > component db componentOut = do
 
-Loop forever waiting on a TChan.  When we get something, log it and send it to the server.  Log exceptions but keep running.
+Loop forever waiting on a channel.  When we get something, log it and send it to the server.  Log exceptions but keep running.
 
 > 	thread <- forkXMPP $ forever $ flip catchError (log "COMPONENT OUT EXCEPTION") $ do
-> 		stanza <- liftIO $ atomically $ readTChan componentOut
+> 		stanza <- liftIO $ atomically $ readTQueue componentOut
 > 		log "COMPONENT OUT" stanza
 > 		XMPP.putStanza stanza
 
@@ -95,7 +95,7 @@ Loop getting stanzas from the server forever.  If there's an exception, log it a
 
 Run the action to handle this stanza, and push any reply stanzas to the other thread.
 
->		mapM (liftIO . atomically . writeTChan componentOut) =<< liftIO (handleInboundStanza db stanza)
+>		mapM (liftIO . atomically . writeTQueue componentOut) =<< liftIO (handleInboundStanza db stanza)
 
 This is a big set of pattern-matches to decide what to do with stanzas we receive from the server.
 
