@@ -213,16 +213,16 @@ This is a forever loop that waits on commands coming in on the `vitelityOut` TCh
 
 Here we actually handle the `vitelityManager` commands.
 
-> oneVitelityCommand :: Map VitelityCredentials (TChan StanzaRec) -> VitelityCommand -> IO (Map VitelityCredentials (TChan StanzaRec))
+> oneVitelityCommand :: Map VitelityCredentials (StanzaRec -> STM ()) -> VitelityCommand -> IO (Map VitelityCredentials (StanzaRec -> STM ()))
 > oneVitelityCommand vitelitySessions sms@(VitelitySMS creds@(VitelityCredentials did _) to body)
 
 If we are sending an SMS and a session for those credentials is already connected.
 
-> 	| Just chan <- Map.lookup creds vitelitySessions = do
+> 	| Just vitelityOut <- Map.lookup creds vitelitySessions = do
 
 Format the SMS into an XMPP Stanza and write it to the TChan for the correct session.
 
-> 		atomically $ writeTChan chan $ mkStanzaRec $ mkSMS to body
+> 		atomically $ vitelityOut $ mkStanzaRec $ mkSMS to body
 > 		return vitelitySessions
 
 Otherwise, we have never connected for this DID.  Highly irregular.  Log this strange situation, try to create the registration, and then retry the SMS.
@@ -232,7 +232,7 @@ Otherwise, we have never connected for this DID.  Highly irregular.  Log this st
 > 		newSessions <- oneVitelityCommand vitelitySessions (VitelityRegistration creds)
 > 		oneVitelityCommand newSessions sms
 
-If we are creating a new registration, log that out and then create a session with `vitelitySession` and store the resulting TChan in the session Map.
+If we are creating a new registration, log that out and then create a session with `vitelitySession` and store the resulting handle in the session Map.
 
 > oneVitelityCommand vitelitySessions (VitelityRegistration creds@(VitelityCredentials did _)) = do
 > 	log "oneVitelityCommand" ("New registration for", did)
@@ -241,23 +241,23 @@ If we are creating a new registration, log that out and then create a session wi
 
 Here we take some `VitelityCredentials` and actually create the XMPP connection, setting up a bunch of last-ditch exception handling and forever-reconnection logic while we're at it.
 
-> vitelitySession :: VitelityCredentials -> IO (TChan StanzaRec)
+> vitelitySession :: VitelityCredentials -> IO (StanzaRec -> STM ())
 > vitelitySession (VitelityCredentials did password) = do
-> 	outChan <- atomically newTChan
+> 	outChan <- newTQueueIO
 > 	void $ forkIO $ forever $
 > 		(log "vitelitySession ENDED" <=< (runExceptT . syncIO)) $
 > 		(log "vitelitySession ENDED INTERNAL" =<<) $ do
 > 			log "vitelitySession" ("Starting", did)
-> 			XMPP.runClient smsServer jid did password (XMPP.bindJID jid >> vitelityClient outChan)
-> 	return outChan
+> 			XMPP.runClient smsServer jid did password (XMPP.bindJID jid >> vitelityClient (readTQueue outChan))
+> 	return (writeTQueue outChan)
 > 	where
 > 	smsServer = XMPP.Server (s"s.ms") "s.ms" (PortNumber 5222)
 > 	Just jid = XMPP.parseJID (did ++ s"@s.ms")
 
 And then finally actually handle the connection the the Vitelity XMPP server.
 
-> vitelityClient :: TChan StanzaRec -> XMPP.XMPP ()
-> vitelityClient outChan = do
+> vitelityClient :: STM StanzaRec -> XMPP.XMPP ()
+> vitelityClient getNextOutput = do
 
 First, set our presence to available.
 
@@ -266,7 +266,7 @@ First, set our presence to available.
 Then fork a thread to handle outgoing stanzas.  Very similar to the thread for outgoing stanzas on the component connection, but here we wait a random amount of time after each send (because Vitelity kind of sucks and this seems to help reliability).
 
 > 	thread <- forkXMPP $ forever $ flip catchError (liftIO . log "vitelityClient OUT EXCEPTION") $ do
-> 		stanza <- liftIO $ atomically $ readTChan outChan
+> 		stanza <- liftIO $ atomically getNextOutput
 > 		log "VITELITY OUT" stanza
 > 		XMPP.putStanza stanza
 > 		wait <- liftIO $ getStdRandom (randomR (1000000,2000000))
