@@ -50,7 +50,7 @@ Force line buffering for our log output, even when redirected to a file.
 
 First, we need to get our settings from the command line arguments.
 
-> 	(componentJidText, componentHost, componentPort, componentSecret) <- readArgs
+> 	(componentJidText, serverHost, serverPort, componentSecret) <- readArgs
 > 	let Just componentJid = XMPP.parseJID componentJidText
 
 Open a handle to the Tokyo Cabinet database that we're going to use for storing Vitelity credentials.
@@ -72,13 +72,13 @@ Catch any exceptions, and log the result on termination, successful or not.
 
 > 		(log "runComponent" <=< (runExceptT . syncIO)) $
 > 			XMPP.runComponent
-> 			(XMPP.Server componentJid componentHost (PortNumber $ fromIntegral (componentPort :: Int)))
+> 			(XMPP.Server componentJid serverHost (PortNumber $ fromIntegral (serverPort :: Int)))
 > 			componentSecret
 > 			(component db componentOut (writeTQueue vitelityCommands))
 
 Now we start up the service that will manage all our connections to Vitelity and route messages.
 
-> 	vitelityManager (readTQueue vitelityCommands) (mapFromVitelity $ fromString componentHost) (writeTQueue componentOut)
+> 	vitelityManager (readTQueue vitelityCommands) (mapFromVitelity componentJidText) (writeTQueue componentOut)
 
 This is where we handle talking to the XMPP server.
 
@@ -295,7 +295,7 @@ Here we take some `VitelityCredentials` and actually create the XMPP connection,
 > 	return (writeTQueue sendStanzas, modifyTVar' subscriberJids . (:))
 > 	where
 > 	smsServer = XMPP.Server (s"s.ms") "s.ms" (PortNumber 5222)
-> 	Just jid = XMPP.parseJID (did ++ s"@s.ms")
+> 	Just jid = XMPP.parseJID (did ++ s"@s.ms/sgx")
 
 And then finally actually handle the connection the the Vitelity XMPP server.
 
