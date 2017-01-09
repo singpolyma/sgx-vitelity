@@ -74,7 +74,7 @@ Catch any exceptions, and log the result on termination, successful or not.
 > 			XMPP.runComponent
 > 			(XMPP.Server componentJid componentHost (PortNumber $ fromIntegral (componentPort :: Int)))
 > 			componentSecret
-> 			(component db componentOut)
+> 			(component db componentOut (writeTQueue vitelityCommands))
 
 Now we start up the service that will manage all our connections to Vitelity and route messages.
 
@@ -82,8 +82,8 @@ Now we start up the service that will manage all our connections to Vitelity and
 
 This is where we handle talking to the XMPP server.
 
-> component :: TC.HDB -> TQueue StanzaRec -> XMPP.XMPP ()
-> component db componentOut = do
+> component :: TC.HDB -> TQueue StanzaRec -> (VitelityCommand -> STM ()) -> XMPP.XMPP ()
+> component db componentOut sendVitelityCommand = do
 
 Loop forever waiting on a channel.  When we get something, log it and send it to the server.  Log exceptions but keep running.
 
@@ -100,23 +100,36 @@ Loop getting stanzas from the server forever.  If there's an exception, log it a
 
 Run the action to handle this stanza, and push any reply stanzas to the other thread.
 
->		mapM (liftIO . atomically . writeTQueue componentOut) =<< liftIO (handleInboundStanza db stanza)
+>		mapM (liftIO . atomically . writeTQueue componentOut) =<< liftIO (handleInboundStanza db sendVitelityCommand stanza)
 
 This is a big set of pattern-matches to decide what to do with stanzas we receive from the server.
 
-> handleInboundStanza :: TC.HDB -> XMPP.ReceivedStanza -> IO [StanzaRec]
+> handleInboundStanza :: TC.HDB -> (VitelityCommand -> STM ()) -> XMPP.ReceivedStanza -> IO [StanzaRec]
 
 Stanza is a message with both to and from set.
 
-> handleInboundStanza db (XMPP.ReceivedMessage (m@XMPP.Message { XMPP.messageTo = Just to, XMPP.messageFrom = Just from }))
+> handleInboundStanza db sendVitelityCommand (XMPP.ReceivedMessage (m@XMPP.Message { XMPP.messageTo = Just to, XMPP.messageFrom = Just from }))
 
 Try to convert the destination JID to a Vitelity JID.  If we succeed, then we have a valid destination to try.
 
 >	| Just vitelityJid <- mapToVitelity to = do
+
+We look up the credentials in the database here so that we can send back an error if there is no registration for the sender.  We also try to extract the body from the message, since if there isn't one we probably don't want to send a blank SMS.
+
 > 		maybeCreds <- fetchVitelityCredentials db from
-> 		case maybeCreds of
-> 			Just creds -> undefined -- routeMessage (getBody "jabber:component:accept" m) vitelityJid creds
-> 			Nothing -> return [mkStanzaRec $ registrationRequiredError m]
+> 		case (maybeCreds, getBody "jabber:component:accept" m) of
+> 			(Nothing, _) -> return [mkStanzaRec $ registrationRequiredError m]
+> 			(_, Nothing) -> return [mkStanzaRec $ noBodyError m]
+
+Now that we have the credentials, build the SMS command and send it to Vitelity.
+
+> 			(Just creds, Just body) -> do
+> 				atomically $ sendVitelityCommand $
+> 					VitelitySMS creds (XMPP.messageID m) vitelityJid body
+
+No stanzas to send back to the sender yet.
+
+> 				return []
 
 JID is not in a format we recognize, so send back a delivery error stanza.
 
@@ -126,7 +139,7 @@ JID is not in a format we recognize, so send back a delivery error stanza.
 
 If we do not recognize the stanza at all, just print it to the log for now.
 
-> handleInboundStanza _ stanza = log "UNKNOWN STANZA" stanza >> return []
+> handleInboundStanza _ _ stanza = log "UNKNOWN STANZA" stanza >> return []
 
 This is the error to send back when we get a message to an invalid JID.
 
