@@ -120,54 +120,47 @@ Try to convert the destination JID to a Vitelity JID.  If we succeed, then we ha
 
 JID is not in a format we recognize, so send back a delivery error stanza.
 
->	| otherwise   = do
+>	| otherwise = do
 > 		log "MESSAGE TO INVALID JID" m
-> 		return [
-
-Send back a formatted payload of error type "cancel", which means a fatal error so that the sender should not retry.
-
-> 				mkStanzaRec $ messageError m [
-> 					Element (s"{jabber:component:accept}error")
-> 					[(s"{jabber:component:accept}type", [ContentText $ s"cancel"])]
-> 					[
-
-Specific error type: JID could not be found.
-
-> 						NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}item-not-found") [] [],
-
-Human readable error text in English.
-
-> 						NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}text")
-> 							[(s"xml:lang", [ContentText $ s"en"])]
-> 							[NodeContent $ ContentText $ s"JID localpart must be in E.164 format."]
-> 					]
-> 				]
-> 			]
+> 		return [mkStanzaRec $ invalidJidError m]
 
 If we do not recognize the stanza at all, just print it to the log for now.
 
 > handleInboundStanza _ stanza = log "UNKNOWN STANZA" stanza >> return []
 
+This is the error to send back when we get a message to an invalid JID.
+
+> invalidJidError :: XMPP.Message -> XMPP.Message
+> invalidJidError = messageError' "cancel" "item-not-found" (s"JID localpart must be in E.164 format.") []
+
+This is the error to send back when we get a message from an unregistered JID.
+
 > registrationRequiredError :: XMPP.Message -> XMPP.Message
-> registrationRequiredError m =
+> registrationRequiredError = messageError' "auth" "registration-required" (s"You must be registered with Vitelity credentials to use this gateway.") []
 
-Add a formatted payload of error type "auth", which means an authorization error where the sender can retry after fixing their authorization status.
+This is the error to send back when we get a message with no body.
 
+> noBodyError :: XMPP.Message -> XMPP.Message
+> noBodyError = messageError' "modify" "not-acceptable" (s"There was no body on the message you sent.") []
+
+Helper to create an XMPP message error response with basic structure most errors need filled in.
+
+> messageError' :: String -> String -> Text -> [Node] -> XMPP.Message -> XMPP.Message
+> messageError' typ definedCondition english morePayload m =
 > 	messageError m [
 > 		Element (s"{jabber:component:accept}error")
-> 		[(s"{jabber:component:accept}type", [ContentText $ s"auth"])]
-> 		[
-
-Specific error type: registration required.
-
-> 			NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}registration-required") [] [],
-
-Human readable error text in English.
-
-> 			NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}text")
-> 				[(s"xml:lang", [ContentText $ s"en"])]
-> 				[NodeContent $ ContentText $ s"You must be registered with Vitelity credentials to use this gateway."]
-> 		]
+> 		[(s"{jabber:component:accept}type", [ContentText $ fromString typ])]
+> 		(
+> 			(
+> 				NodeElement $ Element (fromString $ "{urn:ietf:params:xml:ns:xmpp-stanzas}" ++ definedCondition) [] []
+> 			) :
+> 			(
+> 				NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}text")
+> 					[(s"xml:lang", [ContentText $ s"en"])]
+> 					[NodeContent $ ContentText english]
+> 			) :
+> 			morePayload
+> 		)
 > 	]
 
 Helper to convert a message to its equivalent error return.
