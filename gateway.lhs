@@ -59,7 +59,8 @@ Open a handle to the Tokyo Cabinet database that we're going to use for storing 
 
 Create a channel that will be used to queue up stanzas for sending out through the component connection.
 
-> 	componentOut <- atomically newTQueue
+> 	componentOut <- newTQueueIO
+> 	vitelityCommands <- newTQueueIO
 
 Now we connect up the component so that stanzas will be routed to us by the server.
 Run in a background thread and reconnect forever if `runComponent` terminates.
@@ -74,6 +75,10 @@ Catch any exceptions, and log the result on termination, successful or not.
 > 			(XMPP.Server componentJid componentHost (PortNumber $ fromIntegral (componentPort :: Int)))
 > 			componentSecret
 > 			(component db componentOut)
+
+Now we start up the service that will manage all our connections to Vitelity and route messages.
+
+> 	vitelityManager (readTQueue vitelityCommands) (mapFromVitelity $ fromString componentHost) (writeTQueue componentOut)
 
 This is where we handle talking to the XMPP server.
 
@@ -196,68 +201,100 @@ Everything else is an invalid JID.
 
 > mapToVitelity _ = Nothing
 
+Similarly, we want to map back to E.164 for outgoing stanzas.
+
+> mapFromVitelity :: Text -> XMPP.JID -> Maybe XMPP.JID
+> mapFromVitelity hostname (XMPP.JID (Just localpart) _ _)
+
+If there are 10 digits, this is a NANP number, so prefix "+1".
+
+> 	| T.length localpartText == 10 && T.all isDigit localpartText =
+> 		XMPP.parseJID (s"+1" ++ localpartText ++ s"@" ++ hostname)
+
+Otherwise, if it starts wih "011" it's an international number, so replace the prefix with "+".
+
+> 	| Just tel <- T.stripPrefix (s"011") localpartText,
+> 	  T.all isDigit tel =
+> 		XMPP.parseJID (s"+" ++ tel ++ s"@" ++ hostname)
+> 	where
+> 	localpartText = XMPP.strNode localpart
+
+Everythign else is an invalid JID.
+
+> mapFromVitelity _ _ = Nothing
+
 A management server to keep track of all our connections to Vitelity and route messages to them.
 
-> data VitelityCommand = VitelityRegistration VitelityCredentials | VitelitySMS VitelityCredentials XMPP.JID Text
+> data VitelityCommand = VitelityRegistration [XMPP.JID] VitelityCredentials | VitelitySMS VitelityCredentials (Maybe Text) XMPP.JID Text
+> type VitelityManagerState = Map VitelityCredentials (StanzaRec -> STM (), XMPP.JID -> STM ())
 
-> vitelityManager :: TChan VitelityCommand -> IO ()
-> vitelityManager vitelityOut = go Map.empty
+> vitelityManager :: STM VitelityCommand -> (XMPP.JID -> Maybe XMPP.JID) -> (StanzaRec -> STM ()) -> IO ()
+> vitelityManager getVitelityCommand mapToComponent sendToComponent = go Map.empty
 > 	where
 
 This is a forever loop that waits on commands coming in on the `vitelityOut` TChan and handles one at a time using `oneVitelityCommand`.
 
 > 	go vitelitySessions =
-> 		atomically (readTChan vitelityOut) >>=
-> 		oneVitelityCommand vitelitySessions >>=
+> 		atomically getVitelityCommand >>=
+> 		oneVitelityCommand mapToComponent sendToComponent vitelitySessions >>=
 > 		go
 
 Here we actually handle the `vitelityManager` commands.
 
-> oneVitelityCommand :: Map VitelityCredentials (StanzaRec -> STM ()) -> VitelityCommand -> IO (Map VitelityCredentials (StanzaRec -> STM ()))
-> oneVitelityCommand vitelitySessions sms@(VitelitySMS creds@(VitelityCredentials did _) to body)
+> oneVitelityCommand :: (XMPP.JID -> Maybe XMPP.JID) -> (StanzaRec -> STM ()) -> VitelityManagerState -> VitelityCommand -> IO VitelityManagerState
+> oneVitelityCommand mapToComponent sendToComponent vitelitySessions sms@(VitelitySMS creds@(VitelityCredentials did _) smsID to body)
 
 If we are sending an SMS and a session for those credentials is already connected.
 
-> 	| Just vitelityOut <- Map.lookup creds vitelitySessions = do
+> 	| Just (sendToVitelity, _) <- Map.lookup creds vitelitySessions = do
 
 Format the SMS into an XMPP Stanza and write it to the TChan for the correct session.
 
-> 		atomically $ vitelityOut $ mkStanzaRec $ mkSMS to body
+> 		atomically $ sendToVitelity $ mkStanzaRec $ (mkSMS to body) { XMPP.messageID = smsID }
 > 		return vitelitySessions
 
 Otherwise, we have never connected for this DID.  Highly irregular.  Log this strange situation, try to create the registration, and then retry the SMS.
 
 > 	| otherwise = do
 > 		log "oneVitelityCommand" ("No session found for", did)
-> 		newSessions <- oneVitelityCommand vitelitySessions (VitelityRegistration creds)
-> 		oneVitelityCommand newSessions sms
+> 		newSessions <- oneVitelityCommand mapToComponent sendToComponent vitelitySessions (VitelityRegistration [] creds)
+> 		oneVitelityCommand mapToComponent sendToComponent newSessions sms
 
 If we are creating a new registration, log that out and then create a session with `vitelitySession` and store the resulting handle in the session Map.
 
-> oneVitelityCommand vitelitySessions (VitelityRegistration creds@(VitelityCredentials did _)) = do
-> 	log "oneVitelityCommand" ("New registration for", did)
-> 	sessionChan <- vitelitySession creds
-> 	return $! Map.insert creds sessionChan vitelitySessions
+> oneVitelityCommand mapToComponent sendToComponent vitelitySessions (VitelityRegistration jids creds@(VitelityCredentials did _))
+> 	| Just (_, addJidSubscription) <- Map.lookup creds vitelitySessions = do
+> 		log "oneVitelityCommand" ("New subscription for", jids, did)
+> 		atomically $ mapM_ addJidSubscription jids
+> 		return vitelitySessions
+> 	| otherwise = do
+> 		log "oneVitelityCommand" ("New registration for", jids, did)
+> 		session@(_, addJidSubscription) <- vitelitySession mapToComponent sendToComponent creds
+> 		atomically $ mapM_ addJidSubscription jids
+> 		return $! Map.insert creds session vitelitySessions
 
 Here we take some `VitelityCredentials` and actually create the XMPP connection, setting up a bunch of last-ditch exception handling and forever-reconnection logic while we're at it.
 
-> vitelitySession :: VitelityCredentials -> IO (StanzaRec -> STM ())
-> vitelitySession (VitelityCredentials did password) = do
-> 	outChan <- newTQueueIO
+> vitelitySession :: (XMPP.JID -> Maybe XMPP.JID) -> (StanzaRec -> STM ()) -> VitelityCredentials -> IO (StanzaRec -> STM (), XMPP.JID -> STM ())
+> vitelitySession mapToComponent sendToComponent (VitelityCredentials did password) = do
+> 	sendStanzas <- newTQueueIO
+> 	subscriberJids <- newTVarIO []
 > 	void $ forkIO $ forever $
 > 		(log "vitelitySession ENDED" <=< (runExceptT . syncIO)) $
 > 		(log "vitelitySession ENDED INTERNAL" =<<) $ do
 > 			log "vitelitySession" ("Starting", did)
-> 			XMPP.runClient smsServer jid did password (XMPP.bindJID jid >> vitelityClient (readTQueue outChan))
-> 	return (writeTQueue outChan)
+> 			XMPP.runClient smsServer jid did password $ do
+> 				void $ XMPP.bindJID jid
+> 				vitelityClient (readTQueue sendStanzas) (readTVar subscriberJids) mapToComponent sendToComponent
+> 	return (writeTQueue sendStanzas, modifyTVar' subscriberJids . (:))
 > 	where
 > 	smsServer = XMPP.Server (s"s.ms") "s.ms" (PortNumber 5222)
 > 	Just jid = XMPP.parseJID (did ++ s"@s.ms")
 
 And then finally actually handle the connection the the Vitelity XMPP server.
 
-> vitelityClient :: STM StanzaRec -> XMPP.XMPP ()
-> vitelityClient getNextOutput = do
+> vitelityClient :: STM StanzaRec -> STM [XMPP.JID] -> (XMPP.JID -> Maybe XMPP.JID) -> (StanzaRec -> STM ()) -> XMPP.XMPP ()
+> vitelityClient getNextOutput getSubscriberJids mapToComponent sendToComponent = do
 
 First, set our presence to available.
 
@@ -273,12 +310,27 @@ Then fork a thread to handle outgoing stanzas.  Very similar to the thread for o
 > 		liftIO $ threadDelay wait
 
 > 	flip catchError (\e -> liftIO (log "vitelityClient IN EXCEPTION" e >> killThread thread)) $ forever $ do
+> 		subscribers <- liftIO $ atomically getSubscriberJids
 > 		stanza <- XMPP.getStanza
 > 		log "VITELITY  IN" stanza
 > 		case stanza of
 > 			XMPP.ReceivedMessage m
-> 				| Just tel <- XMPP.strNode <$> (XMPP.jidNode =<< XMPP.messageFrom m),
-> 				  Just txt <- getBody "jabber:client" m -> undefined
+> 				| XMPP.messageType m /= XMPP.MessageError,
+> 				  Just from <- mapToComponent =<< XMPP.messageFrom m,
+> 				  Just txt <- getBody "jabber:client" m ->
+> 					liftIO $ atomically $ mapM_ (\to ->
+> 						sendToComponent $ mkStanzaRec ((mkSMS to txt) { XMPP.messageFrom = Just from })
+> 					) subscribers
+
+TODO: track who tried to send a particular message and only deliver the error back to them, instead of broadcasting the error to everyone.
+
+At least IDs should line up because we preserve them when sending through to Vitelity.
+
+> 				| XMPP.messageType m == XMPP.MessageError,
+> 				  Just from <- mapToComponent =<< XMPP.messageFrom m ->
+> 					liftIO $ atomically $ mapM_ (\to ->
+> 						sendToComponent $ mkStanzaRec (m { XMPP.messageTo = Just to, XMPP.messageFrom = Just from })
+> 					) subscribers
 > 			_ -> return ()
 
 Fetch vitelity credentials from the database for a particular source JID.
@@ -297,8 +349,8 @@ Then try to parse the string as VitelityCredentials.
 Make the XMPP stanza needed to send an SMS.
 
 > mkSMS :: XMPP.JID -> Text -> XMPP.Message
-> mkSMS vitelityJid txt = (XMPP.emptyMessage XMPP.MessageChat) {
-> 	XMPP.messageTo = Just vitelityJid,
+> mkSMS to txt = (XMPP.emptyMessage XMPP.MessageChat) {
+> 	XMPP.messageTo = Just to,
 > 	XMPP.messagePayloads = [Element (s"{jabber:client}body") [] [NodeContent $ ContentText txt]]
 > }
 
