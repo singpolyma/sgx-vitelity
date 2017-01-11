@@ -261,11 +261,11 @@ If there is no localpart, then they are asking for presence of the gateway itsel
 > 			XMPP.presenceTo = Just from,
 > 			XMPP.presenceFrom = Just to,
 > 			XMPP.presencePayloads = [
-> 				Element (fromString "{http://jabber.org/protocol/caps}c") [
-> 					(fromString "{http://jabber.org/protocol/caps}hash", [ContentText $ fromString "sha-1"]),
-> 					(fromString "{http://jabber.org/protocol/caps}node", [ContentText $ fromString "xmpp:vitelity.soprani.ca"]),
+> 				Element (s"{http://jabber.org/protocol/caps}c") [
+> 					(s"{http://jabber.org/protocol/caps}hash", [ContentText $ s"sha-1"]),
+> 					(s"{http://jabber.org/protocol/caps}node", [ContentText $ s"xmpp:vitelity.soprani.ca"]),
 > 					-- gateway/sms//Soprani.ca Gateway to XMPP - Vitelity<jabber:iq:gateway<jabber:iq:register<urn:xmpp:ping<
-> 					(fromString "{http://jabber.org/protocol/caps}ver", [ContentText $ fromString "4vgIzfYSo8iks5Em0Pe4WS/oE18="])
+> 					(s"{http://jabber.org/protocol/caps}ver", [ContentText $ s"4vgIzfYSo8iks5Em0Pe4WS/oE18="])
 > 				] []
 > 			]
 > 		}]
@@ -291,38 +291,37 @@ Auto-approve presence subscription requests sent to the gateway itself, and also
 
 Match when the inbound stanza is an IQ of type get, with a proper from, to, and some kind of payload.
 
-> handleInboundStanza _ _ (XMPP.ReceivedIQ (XMPP.IQ {
+> handleInboundStanza _ _ (XMPP.ReceivedIQ iq@(XMPP.IQ {
 > 	XMPP.iqType = XMPP.IQGet,
 > 	XMPP.iqFrom = Just from,
 > 	XMPP.iqTo = Just to,
-> 	XMPP.iqID = sid,
 > 	XMPP.iqPayload = Just p
 > }))
 
 If the IQ was send to a JID with no localpart, then the query is for the gateway itself.  So if the request is service discovery on the gateway, log the request and return our XEP-0030 info.
 
 > 	| Nothing <- XMPP.jidNode to,
-> 	  [_] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
+> 	  [_] <- isNamed (s"{http://jabber.org/protocol/disco#info}query") p = do
 > 		log "DISCO ON US" (from, to, p)
-> 		return [mkStanzaRec $ (XMPP.emptyIQ XMPP.IQResult) {
+> 		return [mkStanzaRec $ iq {
 > 				XMPP.iqTo = Just from,
 > 				XMPP.iqFrom = Just to,
-> 				XMPP.iqID = sid,
-> 				XMPP.iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/disco#info}query") []
+> 				XMPP.iqType = XMPP.IQResult,
+> 				XMPP.iqPayload = Just $ Element (s"{http://jabber.org/protocol/disco#info}query") []
 > 					[
-> 						NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}identity") [
-> 							(fromString "{http://jabber.org/protocol/disco#info}category", [ContentText $ fromString "gateway"]),
-> 							(fromString "{http://jabber.org/protocol/disco#info}type", [ContentText $ fromString "sms"]),
-> 							(fromString "{http://jabber.org/protocol/disco#info}name", [ContentText $ fromString "Soprani.ca Gateway to XMPP - Vitelity"])
+> 						NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}identity") [
+> 							(s"{http://jabber.org/protocol/disco#info}category", [ContentText $ s"gateway"]),
+> 							(s"{http://jabber.org/protocol/disco#info}type", [ContentText $ s"sms"]),
+> 							(s"{http://jabber.org/protocol/disco#info}name", [ContentText $ s"Soprani.ca Gateway to XMPP - Vitelity"])
 > 						] [],
-> 						NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
-> 							(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:iq:gateway"])
+> 						NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
+> 							(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"jabber:iq:gateway"])
 > 						] [],
-> 						NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
-> 							(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:iq:register"])
+> 						NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
+> 							(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"jabber:iq:register"])
 > 						] [],
-> 						NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
-> 							(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "urn:xmpp:ping"])
+> 						NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
+> 							(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"urn:xmpp:ping"])
 > 						] []
 > 					]
 > 			}]
