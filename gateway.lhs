@@ -161,6 +161,91 @@ If we fail to convert the destination to a Vitelity JID, send back and delivery 
 > 		log "MESSAGE TO INVALID JID" m
 > 		return [mkStanzaRec $ invalidJidError m]
 
+If we match an iq "get" requesting the registration form, then deliver back the form in XEP-0077 format.
+
+> handleInboundStanza _ _ (XMPP.ReceivedIQ iq@(XMPP.IQ {
+> 	XMPP.iqType = XMPP.IQGet,
+> 	XMPP.iqFrom = Just from,
+> 	XMPP.iqTo = Just to@(XMPP.JID { XMPP.jidNode = Nothing }),
+> 	XMPP.iqPayload = Just p
+> }))
+> 	| [_] <- isNamed (s"{jabber:iq:register}query") p =
+> 		return [mkStanzaRec $ iq {
+> 			XMPP.iqTo = Just from,
+> 			XMPP.iqFrom = Just to,
+> 			XMPP.iqType = XMPP.IQResult,
+> 			XMPP.iqPayload = Just $ Element (s"{jabber:iq:register}query") []
+> 				[
+> 					NodeElement $ Element (s"{jabber:iq:register}instructions") [] [
+> 						NodeContent $ ContentText $ s"Please enter your DID and the password you set for Vitelity's s.ms service."
+> 					],
+> 					NodeElement $ Element (s"{jabber:iq:register}phone") [] [],
+> 					NodeElement $ Element (s"{jabber:iq:register}password") [] []
+>				]
+>		}]
+
+If we match an iq "set" with a completed registration form, then register the user.
+
+> handleInboundStanza db sendVitelityCommand (XMPP.ReceivedIQ iq@(XMPP.IQ {
+> 	XMPP.iqType = XMPP.IQSet,
+> 	XMPP.iqFrom = Just from,
+> 	XMPP.iqTo = Just to@(XMPP.JID { XMPP.jidNode = Nothing }),
+> 	XMPP.iqPayload = Just p
+> }))
+> 	| [query] <- isNamed (s"{jabber:iq:register}query") p =
+
+Extract the values from the completed form.
+
+> 		let
+> 			phone = mconcat . elementText <$> listToMaybe
+> 				(isNamed (s"{jabber:iq:register}phone") =<< elementChildren query)
+> 			password = mconcat . elementText <$> listToMaybe
+> 				(isNamed (s"{jabber:iq:register}password") =<< elementChildren query)
+
+Try to normalize the phone number.  After all, a human typed it in.
+
+> 		in case (normalizeTel =<< phone, password) of
+
+If we get a working E.164 number and possible password, then we can actually try the registration.
+
+> 			(Just tel, Just pw) -> do
+> 				let creds = VitelityCredentials tel pw
+
+Store the credentials in the database.
+
+> 				True <- TC.runTCM $ TC.put db (textToString $ bareTxt from) (textToString $ show creds)
+
+Send the registration over to the vitelityManager.
+
+> 				atomically $ sendVitelityCommand $ VitelityRegistration [from] creds
+
+And return a sucess result to the user.
+
+> 				return [mkStanzaRec $ iq {
+> 						XMPP.iqTo = Just from,
+> 						XMPP.iqFrom = Just to,
+> 						XMPP.iqType = XMPP.IQResult,
+> 						XMPP.iqPayload = Nothing
+> 					}]
+
+Otherwise, the user has made a serious mistake, and we will have to return an error.
+
+> 			_ -> return [mkStanzaRec $ iq {
+> 					XMPP.iqTo = Just from,
+> 					XMPP.iqFrom = Just to,
+> 					XMPP.iqType = XMPP.IQError,
+> 					XMPP.iqPayload = Just $ Element (s"{jabber:component:accept}error")
+> 						[(s"{jabber:component:accept}type", [ContentText $ s"modify"])]
+> 						[
+> 							(NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}not-acceptable") [] []),
+> 							(
+> 								NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}text")
+> 									[(s"xml:lang", [ContentText $ s"en"])]
+> 									[NodeContent $ ContentText $ s"Bad phone number format or missing password."]
+> 							)
+> 						]
+> 				}]
+
 The XMPP server will send us presence stanzas of type "probe" when someone wants to know the presence of one of our JIDs.
 
 > handleInboundStanza _ _ (XMPP.ReceivedPresence (XMPP.Presence {
@@ -283,6 +368,28 @@ Everythign else is an invalid JID.
 
 > mapFromVitelity _ _ = Nothing
 
+Sometimes we want to be more forgiving, such as when we're taking a user registration.  So we need to take garbage a human might type and turn it into E.164 if we can.
+
+> normalizeTel :: Text -> Maybe Text
+> normalizeTel inputString
+
+If there are 10 digits, add the "+1" prefix.
+
+> 	| T.length tel == 10 = Just (s"+1" ++ tel)
+
+If there are 11 digits, then check if the first one is a "1".  If so, we just need to prefix the "+".
+
+> 	| T.length tel == 11, s"1" `T.isPrefixOf` tel = Just (T.cons '+' tel)
+
+Everything else is unusable.
+
+> 	| otherwise = Nothing
+
+But we want to be nice, so let's remove any non-digits before we make the above checks, so that seperators, etc, won't break us.
+
+> 	where
+> 	tel = T.filter isDigit inputString
+
 Now we define a management server to keep track of all our connections to Vitelity and route messages to them.
 
 The vitelityManager takes commands from other threads using this datatype.
@@ -360,8 +467,8 @@ You know the drill.  Loop forever in case the connection dies, catch an log any 
 > 	void $ forkIO $ forever $
 > 		(log "vitelitySession ENDED" <=< (runExceptT . syncIO)) $
 > 		(log "vitelitySession ENDED INTERNAL" =<<) $ do
-> 			log "vitelitySession" ("Starting", did)
-> 			XMPP.runClient smsServer jid did password $ do
+> 			log "vitelitySession" ("Starting", did', jid)
+> 			XMPP.runClient smsServer jid did' password $ do
 > 				void $ XMPP.bindJID jid
 > 				vitelityClient (readTQueue sendStanzas) (readTVar subscriberJids) mapToComponent sendToComponent
 
@@ -375,8 +482,11 @@ We can hard-code the server to connect to, since we know it's Vitelity's s.ms.
 > 	smsServer = XMPP.Server (s"s.ms") "s.ms" (PortNumber 5222)
 
 And also the server and resource to go along with the given DID to produce the login JID.
+We store credentials in E.164 for future-proofing, but Vitelity expects NANP so do that conversion here as well.
+A non-E.164 value stored in the db will crash the thread with a pattern match failure here.
 
-> 	Just jid = XMPP.parseJID (did ++ s"@s.ms/sgx")
+> 	Just jid = XMPP.parseJID (did' ++ s"@s.ms/sgx")
+> 	Just did' = T.stripPrefix (s"+1") did
 
 Once a particular connection to Vitelity has been established, control is trasferred here.
 
