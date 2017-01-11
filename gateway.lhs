@@ -363,7 +363,7 @@ Otherwise, if it starts wih "011" it's an international number, so replace the p
 > 	where
 > 	localpartText = XMPP.strNode localpart
 
-Everythign else is an invalid JID.
+Everything else is an invalid JID.
 
 > mapFromVitelity _ _ = Nothing
 
