@@ -161,6 +161,87 @@ If we fail to convert the destination to a Vitelity JID, send back and delivery 
 > 		log "MESSAGE TO INVALID JID" m
 > 		return [mkStanzaRec $ invalidJidError m]
 
+The XMPP server will send us presence stanzas of type "probe" when someone wants to know the presence of one of our JIDs.
+
+> handleInboundStanza _ _ (XMPP.ReceivedPresence (XMPP.Presence {
+> 	XMPP.presenceType = XMPP.PresenceProbe,
+> 	XMPP.presenceFrom = Just from,
+> 	XMPP.presenceTo = Just to
+> }))
+
+If there is no localpart, then they are asking for presence of the gateway itself.  The gateway is always available, and includes XEP-0115 information to help improve service discovery efficiency.
+
+> 	| Nothing <- XMPP.jidNode to =
+> 		return [mkStanzaRec $ (XMPP.emptyPresence XMPP.PresenceAvailable) {
+> 			XMPP.presenceTo = Just from,
+> 			XMPP.presenceFrom = Just to,
+> 			XMPP.presencePayloads = [
+> 				Element (fromString "{http://jabber.org/protocol/caps}c") [
+> 					(fromString "{http://jabber.org/protocol/caps}hash", [ContentText $ fromString "sha-1"]),
+> 					(fromString "{http://jabber.org/protocol/caps}node", [ContentText $ fromString "xmpp:vitelity.soprani.ca"]),
+> 					-- gateway/sms//Soprani.ca Gateway to XMPP - Vitelity<jabber:iq:gateway<jabber:iq:register<urn:xmpp:ping<
+> 					(fromString "{http://jabber.org/protocol/caps}ver", [ContentText $ fromString "4vgIzfYSo8iks5Em0Pe4WS/oE18="])
+> 				] []
+> 			]
+> 		}]
+
+Auto-approve presence subscription requests sent to the gateway itself, and also reciprocate (we want to know when gateway users come online).
+
+> handleInboundStanza _ _ (XMPP.ReceivedPresence (XMPP.Presence {
+> 	XMPP.presenceType = XMPP.PresenceSubscribe,
+> 	XMPP.presenceFrom = Just from,
+> 	XMPP.presenceTo = Just to@XMPP.JID { XMPP.jidNode = Nothing }
+> })) = do
+> 	log "handleInboundStanza PresenceSubscribe" (from, to)
+> 	return [
+> 			mkStanzaRec $ (XMPP.emptyPresence XMPP.PresenceSubscribed) {
+> 				XMPP.presenceTo = Just from,
+> 				XMPP.presenceFrom = Just to
+> 			},
+> 			mkStanzaRec $ (XMPP.emptyPresence XMPP.PresenceSubscribe) {
+> 				XMPP.presenceTo = Just from,
+> 				XMPP.presenceFrom = Just to
+> 			}
+> 		]
+
+Match when the inbound stanza is an IQ of type get, with a proper from, to, and some kind of payload.
+
+> handleInboundStanza _ _ (XMPP.ReceivedIQ (XMPP.IQ {
+> 	XMPP.iqType = XMPP.IQGet,
+> 	XMPP.iqFrom = Just from,
+> 	XMPP.iqTo = Just to,
+> 	XMPP.iqID = sid,
+> 	XMPP.iqPayload = Just p
+> }))
+
+If the IQ was send to a JID with no localpart, then the query is for the gateway itself.  So if the request is service discovery on the gateway, log the request and return our XEP-0030 info.
+
+> 	| Nothing <- XMPP.jidNode to,
+> 	  [_] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
+> 		log "DISCO ON US" (from, to, p)
+> 		return [mkStanzaRec $ (XMPP.emptyIQ XMPP.IQResult) {
+> 				XMPP.iqTo = Just from,
+> 				XMPP.iqFrom = Just to,
+> 				XMPP.iqID = sid,
+> 				XMPP.iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/disco#info}query") []
+> 					[
+> 						NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}identity") [
+> 							(fromString "{http://jabber.org/protocol/disco#info}category", [ContentText $ fromString "gateway"]),
+> 							(fromString "{http://jabber.org/protocol/disco#info}type", [ContentText $ fromString "sms"]),
+> 							(fromString "{http://jabber.org/protocol/disco#info}name", [ContentText $ fromString "Soprani.ca Gateway to XMPP - Vitelity"])
+> 						] [],
+> 						NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
+> 							(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:iq:gateway"])
+> 						] [],
+> 						NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
+> 							(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:iq:register"])
+> 						] [],
+> 						NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
+> 							(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "urn:xmpp:ping"])
+> 						] []
+> 					]
+> 			}]
+
 If we do not recognize the stanza at all, just print it to the log for now.
 
 > handleInboundStanza _ _ stanza = log "UNKNOWN STANZA" stanza >> return []
