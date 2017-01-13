@@ -9,13 +9,14 @@ Only exporting the main function allows GHC to do more optimisations inside, and
 Switch to BasicPrelude because it's nice.
 
 > import Prelude ()
-> import BasicPrelude hiding (log)
+> import BasicPrelude hiding (log, forM_)
 
 Import all the things!
 
 > import Data.Char
 > import Control.Concurrent
 > import Control.Concurrent.STM
+> import Data.Foldable (forM_)
 > import Data.Time (getCurrentTime)
 > import Control.Error (runExceptT, syncIO, readZ)
 > import Network (PortID(PortNumber))
@@ -54,14 +55,23 @@ First, we need to get our settings from the command line arguments.
 > 	(componentJidText, serverHost, serverPort, componentSecret) <- readArgs
 > 	let Just componentJid = XMPP.parseJID componentJidText
 
-Open a handle to the Tokyo Cabinet database that we're going to use for storing Vitelity credentials.
-
-> 	db <- openTokyoCabinet "./db.tcdb"
-
 Create the channels that will be used for sending stanzas out of the component, and also sending commands to the vitelityManager.
 
 > 	componentOut <- newTQueueIO
 > 	vitelityCommands <- newTQueueIO
+
+Open a handle to the Tokyo Cabinet database that we're going to use for storing Vitelity credentials.
+
+> 	db <- openTokyoCabinet "./db.tcdb"
+
+Then, get the list of keys for registration records in the database, loop over each and remove the "registration\0" prefix to get the JID.  Enqueue the JID and the credentials to be handled by the vitelityManager once it is running.
+
+> 	registrationKeys <- TC.runTCM $ TC.fwmkeys db "registration\0" maxBound
+> 	forM_ (registrationKeys :: [String]) $ \key -> do
+> 		maybeCredString <- TC.runTCM (TC.get db key)
+> 		forM_ (readZ =<< maybeCredString) $ \creds ->
+> 			forM_ (XMPP.parseJID =<< T.stripPrefix (s"registration\0") (fromString key)) $ \jid ->
+> 				atomically $ writeTQueue vitelityCommands $ VitelityRegistration [jid] creds
 
 Now we connect up the component so that stanzas will be routed to us by the server.
 Run in a background thread and reconnect forever if `runComponent` terminates.
@@ -213,7 +223,7 @@ If we get a working E.164 number and possible password, then we can actually try
 
 Store the credentials in the database.
 
-> 				True <- TC.runTCM $ TC.put db (textToString $ bareTxt from) (textToString $ show creds)
+> 				True <- TC.runTCM $ TC.put db ("registration\0" ++ textToString (bareTxt from)) (textToString $ show creds)
 
 Send the registration over to the vitelityManager.
 
@@ -543,7 +553,7 @@ We need a way to fetch vitelity credentials from the database for a particular s
 
 Get whatever is at (or Nothing if the key does not exist) the key corresponding to the bare part of the from JID.
 
-> 	maybeCredentialString <- TC.runTCM (TC.get db $ textToString $ bareTxt from)
+> 	maybeCredentialString <- TC.runTCM (TC.get db $ "registration\0" ++ textToString (bareTxt from))
 
 Then try to parse the string as VitelityCredentials.
 
