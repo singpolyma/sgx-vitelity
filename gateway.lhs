@@ -297,6 +297,21 @@ Auto-approve presence subscription requests sent to the gateway itself, and also
 > 			}
 > 		]
 
+Auto-approve presence subscription requests sent to valid phone numbers.
+
+> handleInboundStanza _ _ (XMPP.ReceivedPresence (XMPP.Presence {
+> 	XMPP.presenceType = XMPP.PresenceSubscribe,
+> 	XMPP.presenceFrom = Just from,
+> 	XMPP.presenceTo = Just to
+> })) | Just _ <- mapToVitelity to = do
+> 	log "handleInboundStanza PresenceSubscribe" (from, to)
+> 	return [
+> 			mkStanzaRec $ (XMPP.emptyPresence XMPP.PresenceSubscribed) {
+> 				XMPP.presenceTo = Just from,
+> 				XMPP.presenceFrom = Just to
+> 			}
+> 		]
+
 Match when the inbound stanza is an IQ of type get, with a proper from, to, and some kind of payload.
 
 > handleInboundStanza _ _ (XMPP.ReceivedIQ iq@(XMPP.IQ {
