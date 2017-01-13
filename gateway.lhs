@@ -150,7 +150,7 @@ No stanzas to send back to the sender at this point, so send back and empty list
 
 > 						atomically $ sendVitelityCommand $
 > 							VitelitySMS creds (XMPP.messageID m) vitelityJid
-> 								(s"Error sending message" ++ maybe mempty ((s": ")++) errorTxt)
+> 								(s"Error sending message" ++ maybe mempty (s": " ++) errorTxt)
 > 						return []
 
 If it's not an error, then not having a body is a problem and we return an error ourselves.
@@ -247,12 +247,10 @@ Otherwise, the user has made a serious mistake, and we will have to return an er
 > 					XMPP.iqPayload = Just $ Element (s"{jabber:component:accept}error")
 > 						[(s"{jabber:component:accept}type", [ContentText $ s"modify"])]
 > 						[
-> 							(NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}not-acceptable") [] []),
-> 							(
-> 								NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}text")
-> 									[(s"xml:lang", [ContentText $ s"en"])]
-> 									[NodeContent $ ContentText $ s"Bad phone number format or missing password."]
-> 							)
+> 							NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}not-acceptable") [] [],
+> 							NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}text")
+> 								[(s"xml:lang", [ContentText $ s"en"])]
+> 								[NodeContent $ ContentText $ s"Bad phone number format or missing password."]
 > 						]
 > 				}]
 
