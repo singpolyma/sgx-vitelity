@@ -18,7 +18,7 @@ Import all the things!
 > import Control.Concurrent.STM
 > import Data.Foldable (forM_)
 > import Data.Time (getCurrentTime)
-> import Control.Error (fmapLT, runExceptT, syncIO, readZ, ExceptT, hoistEither)
+> import Control.Error (exceptT, fmapLT, runExceptT, syncIO, readZ, ExceptT, hoistEither)
 > import UnexceptionalIO (Unexceptional)
 > import Network (PortID(PortNumber))
 > import System.IO (stdout, stderr, hSetBuffering, BufferMode(LineBuffering))
@@ -222,22 +222,41 @@ If we get a working E.164 number and possible password, then we can actually try
 > 			(Just tel, Just pw) -> do
 > 				let creds = VitelityCredentials tel pw
 
+Try to connect to Vitelity with the credentials, and check if they work.  Return a not-authorized error on failure.
+
+> 				connectSuccess <- exceptT (const $ return False) (const $ return True) (vitelityConnect creds (return ()))
+> 				if not connectSuccess then
+> 					return [mkStanzaRec $ iq {
+> 						XMPP.iqTo = Just from,
+> 						XMPP.iqFrom = Just to,
+> 						XMPP.iqType = XMPP.IQError,
+> 						XMPP.iqPayload = Just $ Element (s"{jabber:component:accept}error")
+> 							[(s"{jabber:component:accept}type", [ContentText $ s"auth"])]
+> 							[
+> 								NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}not-authorized") [] [],
+> 								NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}text")
+> 									[(s"xml:lang", [ContentText $ s"en"])]
+> 									[NodeContent $ ContentText $ s"There was an error connecting to Vitelity with the provided credentials."]
+> 							]
+> 					}]
+> 				else do
+
 Store the credentials in the database.
 
-> 				True <- TC.runTCM $ TC.put db ("registration\0" ++ textToString (bareTxt from)) (textToString $ show creds)
+> 					True <- TC.runTCM $ TC.put db ("registration\0" ++ textToString (bareTxt from)) (textToString $ show creds)
 
 Send the registration over to the vitelityManager.
 
-> 				atomically $ sendVitelityCommand $ VitelityRegistration [from] creds
+> 					atomically $ sendVitelityCommand $ VitelityRegistration [from] creds
 
 And return a sucess result to the user.
 
-> 				return [mkStanzaRec $ iq {
-> 						XMPP.iqTo = Just from,
-> 						XMPP.iqFrom = Just to,
-> 						XMPP.iqType = XMPP.IQResult,
-> 						XMPP.iqPayload = Nothing
-> 					}]
+> 					return [mkStanzaRec $ iq {
+> 							XMPP.iqTo = Just from,
+> 							XMPP.iqFrom = Just to,
+> 							XMPP.iqType = XMPP.IQResult,
+>	 						XMPP.iqPayload = Nothing
+> 						}]
 
 Otherwise, the user has made a serious mistake, and we will have to return an error.
 
