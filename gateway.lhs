@@ -130,7 +130,7 @@ We look up the credentials in the database here so that we can send back an erro
 
 > 		maybeCreds <- fetchVitelityCredentials db from
 > 		case (maybeCreds, getBody "jabber:component:accept" m) of
-> 			(Nothing, _) -> return [mkStanzaRec $ registrationRequiredError m]
+> 			(Nothing, _) -> return [mkStanzaRec $ messageError registrationRequiredError m]
 
 If the message is an error, we don't actually care about the body.  Send an SMS about the error.
 
@@ -156,7 +156,7 @@ No stanzas to send back to the sender at this point, so send back and empty list
 
 If it's not an error, then not having a body is a problem and we return an error ourselves.
 
-> 			(_, Nothing) -> return [mkStanzaRec $ noBodyError m]
+> 			(_, Nothing) -> return [mkStanzaRec $ messageError noBodyError m]
 
 Now that we have the credentials and the body, build the SMS command and send it to Vitelity.
 No stanzas to send back to the sender at this point, so send back and empty list.
@@ -170,7 +170,7 @@ If we fail to convert the destination to a Vitelity JID, send back and delivery 
 
 >	| otherwise = do
 > 		log "MESSAGE TO INVALID JID" m
-> 		return [mkStanzaRec $ invalidJidError m]
+> 		return [mkStanzaRec $ messageError invalidJidError m]
 
 If we match an iq "get" requesting the registration form, then deliver back the form in XEP-0077 format.
 
@@ -200,7 +200,7 @@ If we match an iq "set" with a completed registration form, then register the us
 > handleInboundStanza db sendVitelityCommand (XMPP.ReceivedIQ iq@(XMPP.IQ {
 > 	XMPP.iqType = XMPP.IQSet,
 > 	XMPP.iqFrom = Just from,
-> 	XMPP.iqTo = Just to@(XMPP.JID { XMPP.jidNode = Nothing }),
+> 	XMPP.iqTo = Just (XMPP.JID { XMPP.jidNode = Nothing }),
 > 	XMPP.iqPayload = Just p
 > }))
 > 	| [query] <- isNamed (s"{jabber:iq:register}query") p =
@@ -226,19 +226,7 @@ Try to connect to Vitelity with the credentials, and check if they work.  Return
 
 > 				connectSuccess <- exceptT (const $ return False) (const $ return True) (vitelityConnect creds (return ()))
 > 				if not connectSuccess then
-> 					return [mkStanzaRec $ iq {
-> 						XMPP.iqTo = Just from,
-> 						XMPP.iqFrom = Just to,
-> 						XMPP.iqType = XMPP.IQError,
-> 						XMPP.iqPayload = Just $ Element (s"{jabber:component:accept}error")
-> 							[(s"{jabber:component:accept}type", [ContentText $ s"auth"])]
-> 							[
-> 								NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}not-authorized") [] [],
-> 								NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}text")
-> 									[(s"xml:lang", [ContentText $ s"en"])]
-> 									[NodeContent $ ContentText $ s"There was an error connecting to Vitelity with the provided credentials."]
-> 							]
-> 					}]
+> 					return [mkStanzaRec $ iqError vitelityAuthError iq]
 > 				else do
 
 Store the credentials in the database.
@@ -251,28 +239,11 @@ Send the registration over to the vitelityManager.
 
 And return a sucess result to the user.
 
-> 					return [mkStanzaRec $ iq {
-> 							XMPP.iqTo = Just from,
-> 							XMPP.iqFrom = Just to,
-> 							XMPP.iqType = XMPP.IQResult,
->	 						XMPP.iqPayload = Nothing
-> 						}]
+> 					return [mkStanzaRec $ iqReply Nothing iq]
 
 Otherwise, the user has made a serious mistake, and we will have to return an error.
 
-> 			_ -> return [mkStanzaRec $ iq {
-> 					XMPP.iqTo = Just from,
-> 					XMPP.iqFrom = Just to,
-> 					XMPP.iqType = XMPP.IQError,
-> 					XMPP.iqPayload = Just $ Element (s"{jabber:component:accept}error")
-> 						[(s"{jabber:component:accept}type", [ContentText $ s"modify"])]
-> 						[
-> 							NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}not-acceptable") [] [],
-> 							NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}text")
-> 								[(s"xml:lang", [ContentText $ s"en"])]
-> 								[NodeContent $ ContentText $ s"Bad phone number format or missing password."]
-> 						]
-> 				}]
+> 			_ -> return [mkStanzaRec $ iqError badRegistrationInfoError iq]
 
 The XMPP server will send us presence stanzas of type "probe" when someone wants to know the presence of one of our JIDs.
 
@@ -346,28 +317,25 @@ If the IQ was send to a JID with no localpart, then the query is for the gateway
 > 	| Nothing <- XMPP.jidNode to,
 > 	  [_] <- isNamed (s"{http://jabber.org/protocol/disco#info}query") p = do
 > 		log "DISCO ON US" (from, to, p)
-> 		return [mkStanzaRec $ iq {
-> 				XMPP.iqTo = Just from,
-> 				XMPP.iqFrom = Just to,
-> 				XMPP.iqType = XMPP.IQResult,
-> 				XMPP.iqPayload = Just $ Element (s"{http://jabber.org/protocol/disco#info}query") []
-> 					[
-> 						NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}identity") [
-> 							(s"{http://jabber.org/protocol/disco#info}category", [ContentText $ s"gateway"]),
-> 							(s"{http://jabber.org/protocol/disco#info}type", [ContentText $ s"sms"]),
-> 							(s"{http://jabber.org/protocol/disco#info}name", [ContentText $ s"Soprani.ca Gateway to XMPP - Vitelity"])
-> 						] [],
-> 						NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
-> 							(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"jabber:iq:gateway"])
-> 						] [],
-> 						NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
-> 							(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"jabber:iq:register"])
-> 						] [],
-> 						NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
-> 							(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"urn:xmpp:ping"])
-> 						] []
-> 					]
-> 			}]
+> 		return [mkStanzaRec $ (`iqReply` iq) $ Just $
+> 				Element (s"{http://jabber.org/protocol/disco#info}query") []
+> 				[
+> 					NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}identity") [
+> 						(s"{http://jabber.org/protocol/disco#info}category", [ContentText $ s"gateway"]),
+> 						(s"{http://jabber.org/protocol/disco#info}type", [ContentText $ s"sms"]),
+> 						(s"{http://jabber.org/protocol/disco#info}name", [ContentText $ s"Soprani.ca Gateway to XMPP - Vitelity"])
+> 					] [],
+> 					NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
+> 						(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"jabber:iq:gateway"])
+> 					] [],
+> 					NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
+> 						(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"jabber:iq:register"])
+> 					] [],
+> 					NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
+> 						(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"urn:xmpp:ping"])
+> 					] []
+> 				]
+> 			]
 
 If we do not recognize the stanza at all, just print it to the log for now.
 
@@ -677,43 +645,47 @@ It takes two lines to open a Tokyo Cabinet with the bindings we're using.  Too m
 
 This is the error to send back when we get a message to an invalid JID.
 
-> invalidJidError :: XMPP.Message -> XMPP.Message
-> invalidJidError = messageError' "cancel" "item-not-found" (s"JID localpart must be in E.164 format.") []
+> invalidJidError :: Element
+> invalidJidError = errorPayload "cancel" "item-not-found" (s"JID localpart must be in E.164 format.") []
 
 This is the error to send back when we get a message from an unregistered JID.
 
-> registrationRequiredError :: XMPP.Message -> XMPP.Message
-> registrationRequiredError = messageError' "auth" "registration-required" (s"You must be registered with Vitelity credentials to use this gateway.") []
+> registrationRequiredError :: Element
+> registrationRequiredError = errorPayload "auth" "registration-required" (s"You must be registered with Vitelity credentials to use this gateway.") []
 
 This is the error to send back when we get a message with no body.
 
-> noBodyError :: XMPP.Message -> XMPP.Message
-> noBodyError = messageError' "modify" "not-acceptable" (s"There was no body on the message you sent.") []
+> noBodyError :: Element
+> noBodyError = errorPayload "modify" "not-acceptable" (s"There was no body on the message you sent.") []
 
-Helper to create an XMPP message error response with basic structure most errors need filled in.
+> vitelityAuthError :: Element
+> vitelityAuthError = errorPayload "auth" "not-authorized" (s"There was an error connecting to Vitelity with the provided credentials.") []
 
-> messageError' :: String -> String -> Text -> [Node] -> XMPP.Message -> XMPP.Message
-> messageError' typ definedCondition english morePayload m =
-> 	messageError m [
-> 		Element (s"{jabber:component:accept}error")
-> 		[(s"{jabber:component:accept}type", [ContentText $ fromString typ])]
+> badRegistrationInfoError :: Element
+> badRegistrationInfoError = errorPayload "modify" "not-acceptable" (s"Bad phone number format or missing password.") []
+
+Helper to create an XMPP error payload with basic structure most errors need filled in.
+
+> errorPayload :: String -> String -> Text -> [Node] -> Element
+> errorPayload typ definedCondition english morePayload =
+> 	Element (s"{jabber:component:accept}error")
+> 	[(s"{jabber:component:accept}type", [ContentText $ fromString typ])]
+> 	(
 > 		(
-> 			(
-> 				NodeElement $ Element (fromString $ "{urn:ietf:params:xml:ns:xmpp-stanzas}" ++ definedCondition) [] []
-> 			) :
-> 			(
-> 				NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}text")
-> 					[(s"xml:lang", [ContentText $ s"en"])]
-> 					[NodeContent $ ContentText english]
-> 			) :
-> 			morePayload
-> 		)
-> 	]
+> 			NodeElement $ Element (fromString $ "{urn:ietf:params:xml:ns:xmpp-stanzas}" ++ definedCondition) [] []
+> 		) :
+> 		(
+> 			NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}text")
+> 				[(s"xml:lang", [ContentText $ s"en"])]
+> 				[NodeContent $ ContentText english]
+> 		) :
+> 		morePayload
+> 	)
 
 Helper to convert a message to its equivalent error return.
 
-> messageError :: XMPP.Message -> [Element] -> XMPP.Message
-> messageError m errorPayload = m {
+> messageError :: Element -> XMPP.Message -> XMPP.Message
+> messageError payload m = m {
 > 	XMPP.messageType = XMPP.MessageError,
 
 Reverse to and from so that the error goes back to the sender.
@@ -723,5 +695,20 @@ Reverse to and from so that the error goes back to the sender.
 
 And append the extra error information to the payload.
 
-> 	XMPP.messagePayloads = XMPP.messagePayloads m ++ errorPayload
+> 	XMPP.messagePayloads = XMPP.messagePayloads m ++ [payload]
+> }
+
+And similar helpers to reply to IQ stanzas with both success and error cases.
+
+> iqReply :: Maybe Element -> XMPP.IQ -> XMPP.IQ
+> iqReply payload iq = iq {
+> 	XMPP.iqType = XMPP.IQResult,
+> 	XMPP.iqFrom = XMPP.iqTo iq,
+> 	XMPP.iqTo = XMPP.iqFrom iq,
+> 	XMPP.iqPayload = payload
+> }
+
+> iqError :: Element -> XMPP.IQ -> XMPP.IQ
+> iqError payload iq = (iqReply (Just payload) iq) {
+> 	XMPP.iqType = XMPP.IQError
 > }
