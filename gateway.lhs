@@ -18,7 +18,8 @@ Import all the things!
 > import Control.Concurrent.STM
 > import Data.Foldable (forM_)
 > import Data.Time (getCurrentTime)
-> import Control.Error (runExceptT, syncIO, readZ)
+> import Control.Error (fmapLT, runExceptT, syncIO, readZ, ExceptT, hoistEither)
+> import UnexceptionalIO (Unexceptional)
 > import Network (PortID(PortNumber))
 > import System.IO (stdout, stderr, hSetBuffering, BufferMode(LineBuffering))
 > import System.Random (Random(randomR), getStdRandom)
@@ -477,38 +478,24 @@ Otherwise, we need to actually start up a new session.  Then add the subscribers
 Here we take some `VitelityCredentials` and actually create the XMPP connection, setting up a bunch of last-ditch exception handling and forever-reconnection logic while we're at it.
 
 > vitelitySession :: (XMPP.JID -> Maybe XMPP.JID) -> (StanzaRec -> STM ()) -> VitelityCredentials -> IO (StanzaRec -> STM (), XMPP.JID -> STM ())
-> vitelitySession mapToComponent sendToComponent (VitelityCredentials did password) = do
+> vitelitySession mapToComponent sendToComponent creds@(VitelityCredentials did _) = do
 
 The outbound stanza channel is similar to what we used before for the component.  Subscriber JIDs are just stored in a threadsafe mutable variable for now.
 
 > 	sendStanzas <- newTQueueIO
 > 	subscriberJids <- newTVarIO []
 
-You know the drill.  Loop forever in case the connection dies, catch an log any exceptions.  Connect to the server and then delegate responsability for the connection to a hanlder.
+Loop forever in case the connection dies, log any result.  Connect to the server and then delegate responsability for the connection to a hanlder.
 
-> 	void $ forkIO $ forever $
-> 		(log "vitelitySession ENDED" <=< (runExceptT . syncIO)) $
-> 		(log "vitelitySession ENDED INTERNAL" =<<) $ do
-> 			log "vitelitySession" ("Starting", did', jid)
-> 			XMPP.runClient smsServer jid did' password $ do
-> 				void $ XMPP.bindJID jid
-> 				vitelityClient (readTQueue sendStanzas) (readTVar subscriberJids) mapToComponent sendToComponent
+> 	void $ forkIO $ forever $ do
+> 		log "vitelitySession" ("Starting", did)
+> 		result <- runExceptT $ vitelityConnect creds
+> 			(vitelityClient (readTQueue sendStanzas) (readTVar subscriberJids) mapToComponent sendToComponent)
+> 		log "vitelitySession" ("Ended", result)
 
 The caller doesn't need to know about our internals, just pass back usable actions to allow adding to the stanza channel and the subscriber list.
 
 > 	return (writeTQueue sendStanzas, modifyTVar' subscriberJids . (:))
-> 	where
-
-We can hard-code the server to connect to, since we know it's Vitelity's s.ms.
-
-> 	smsServer = XMPP.Server (s"s.ms") "s.ms" (PortNumber 5222)
-
-And also the server and resource to go along with the given DID to produce the login JID.
-We store credentials in E.164 for future-proofing, but Vitelity expects NANP so do that conversion here as well.
-A non-E.164 value stored in the db will crash the thread with a pattern match failure here.
-
-> 	Just jid = XMPP.parseJID (did' ++ s"@s.ms/sgx")
-> 	Just did' = T.stripPrefix (s"+1") did
 
 Once a particular connection to Vitelity has been established, control is trasferred here.
 
@@ -558,6 +545,37 @@ Otherwise Vitelity is just sending us some other thing we don't care about (like
 > 			_ -> return ()
 
 And that's it!  Of course, there's some more little helpers we should build to make the above work out.
+
+We need a way to turn VitelityCredentials into an actual XMPP client connection to Vitelity.
+
+> vitelityConnect :: (Unexceptional m, Monad m) => VitelityCredentials -> XMPP.XMPP () -> ExceptT XMPP.Error m ()
+> vitelityConnect (VitelityCredentials did password) run =
+
+Hoist any error response from `XMPP.runClient` into the `ExceptT` exception type.
+
+> 	(hoistEither =<<) $
+
+Catch any exceptions that might happen, map them to a "transport error", and report in `ExceptT`.
+
+> 	fmapLT (XMPP.TransportError . show) $ syncIO $
+
+Once we've set up the error mappings above, actually attempt the XMPP connection.
+
+> 	XMPP.runClient smsServer jid did' password $ do
+> 		void $ XMPP.bindJID jid
+> 		run
+> 	where
+
+We can hard-code the server to connect to, since we know it's Vitelity's s.ms.
+
+> 	smsServer = XMPP.Server (s"s.ms") "s.ms" (PortNumber 5222)
+
+And also the server and resource to go along with the given DID to produce the login JID.
+We store credentials in E.164 for future-proofing, but Vitelity expects NANP so do that conversion here as well.
+A non-E.164 value stored in the db will crash the thread with a pattern match failure here.
+
+> 	Just jid = XMPP.parseJID (did' ++ s"@s.ms/sgx")
+> 	Just did' = T.stripPrefix (s"+1") did
 
 We need a way to fetch vitelity credentials from the database for a particular source JID.
 
