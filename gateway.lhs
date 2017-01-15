@@ -334,6 +334,12 @@ If the IQ was send to a JID with no localpart, then the query is for the gateway
 > 				]
 > 			]
 
+Un-handled IQ requests should be at least replied to with an error.  It's the polite thing to do.
+
+> handleInboundStanza _ _ (XMPP.ReceivedIQ iq@(XMPP.IQ { XMPP.iqType = typ }))
+> 	| typ `elem` [XMPP.IQGet, XMPP.IQSet] =
+> 		return [mkStanzaRec $ iqError (errorPayload "cancel" "feature-not-implemented" mempty []) iq]
+
 If we do not recognize the stanza at all, just print it to the log for now.
 
 > handleInboundStanza _ _ stanza = log "UNKNOWN STANZA" stanza >> return []
