@@ -173,6 +173,61 @@ If we fail to convert the destination to a Vitelity JID, send back and delivery 
 > 		log "MESSAGE TO INVALID JID" m
 > 		return [mkStanzaRec $ messageError invalidJidError m]
 
+The XMPP server will send us presence stanzas of type "probe" when someone wants to know the presence of one of our JIDs.
+
+> handleInboundStanza _ _ (XMPP.ReceivedPresence (XMPP.Presence {
+> 	XMPP.presenceType = XMPP.PresenceProbe,
+> 	XMPP.presenceFrom = Just from,
+> 	XMPP.presenceTo = Just to
+> }))
+
+If there is no localpart, then they are asking for presence of the gateway itself.  The gateway is always available, and includes XEP-0115 information to help improve service discovery efficiency.
+
+> 	| Nothing <- XMPP.jidNode to =
+> 		return [mkStanzaRec $ (XMPP.emptyPresence XMPP.PresenceAvailable) {
+> 			XMPP.presenceTo = Just from,
+> 			XMPP.presenceFrom = Just to,
+> 			XMPP.presencePayloads = [
+> 				Element (s"{http://jabber.org/protocol/caps}c") [
+> 					(s"{http://jabber.org/protocol/caps}hash", [ContentText $ s"sha-1"]),
+> 					(s"{http://jabber.org/protocol/caps}node", [ContentText $ s"xmpp:vitelity.soprani.ca"]),
+> 					-- gateway/sms//Soprani.ca Gateway to XMPP - Vitelity<jabber:iq:register<
+> 					(s"{http://jabber.org/protocol/caps}ver", [ContentText $ s"fo196MetxfqJ9TGvq2Q16893DGg="])
+> 				] []
+> 			]
+> 		}]
+
+Auto-approve presence subscription requests sent to the gateway itself, and also reciprocate (we want to know when gateway users come online).
+
+> handleInboundStanza _ _ (XMPP.ReceivedPresence (XMPP.Presence {
+> 	XMPP.presenceType = XMPP.PresenceSubscribe,
+> 	XMPP.presenceFrom = Just from,
+> 	XMPP.presenceTo = Just to
+> }))
+> 	| Nothing <- XMPP.jidNode to = do
+> 		log "handleInboundStanza PresenceSubscribe" (from, to)
+> 		return [
+> 				mkStanzaRec $ (XMPP.emptyPresence XMPP.PresenceSubscribed) {
+> 					XMPP.presenceTo = Just from,
+> 					XMPP.presenceFrom = Just to
+> 				},
+> 				mkStanzaRec $ (XMPP.emptyPresence XMPP.PresenceSubscribe) {
+> 					XMPP.presenceTo = Just from,
+> 					XMPP.presenceFrom = Just to
+> 				}
+> 			]
+
+Auto-approve presence subscription requests sent to valid phone numbers.
+
+> 	| Just _ <- mapToVitelity to = do
+> 		log "handleInboundStanza PresenceSubscribe" (from, to)
+> 		return [
+> 				mkStanzaRec $ (XMPP.emptyPresence XMPP.PresenceSubscribed) {
+> 					XMPP.presenceTo = Just from,
+> 					XMPP.presenceFrom = Just to
+> 				}
+> 			]
+
 If we match an iq "get" requesting the registration form, then deliver back the form in XEP-0077 format.
 
 > handleInboundStanza _ _ (XMPP.ReceivedIQ iq@(XMPP.IQ {
@@ -246,60 +301,7 @@ Otherwise, the user has made a serious mistake, and we will have to return an er
 
 > 			_ -> return [mkStanzaRec $ iqError badRegistrationInfoError iq]
 
-The XMPP server will send us presence stanzas of type "probe" when someone wants to know the presence of one of our JIDs.
 
-> handleInboundStanza _ _ (XMPP.ReceivedPresence (XMPP.Presence {
-> 	XMPP.presenceType = XMPP.PresenceProbe,
-> 	XMPP.presenceFrom = Just from,
-> 	XMPP.presenceTo = Just to
-> }))
-
-If there is no localpart, then they are asking for presence of the gateway itself.  The gateway is always available, and includes XEP-0115 information to help improve service discovery efficiency.
-
-> 	| Nothing <- XMPP.jidNode to =
-> 		return [mkStanzaRec $ (XMPP.emptyPresence XMPP.PresenceAvailable) {
-> 			XMPP.presenceTo = Just from,
-> 			XMPP.presenceFrom = Just to,
-> 			XMPP.presencePayloads = [
-> 				Element (s"{http://jabber.org/protocol/caps}c") [
-> 					(s"{http://jabber.org/protocol/caps}hash", [ContentText $ s"sha-1"]),
-> 					(s"{http://jabber.org/protocol/caps}node", [ContentText $ s"xmpp:vitelity.soprani.ca"]),
-> 					-- gateway/sms//Soprani.ca Gateway to XMPP - Vitelity<jabber:iq:register<
-> 					(s"{http://jabber.org/protocol/caps}ver", [ContentText $ s"fo196MetxfqJ9TGvq2Q16893DGg="])
-> 				] []
-> 			]
-> 		}]
-
-Auto-approve presence subscription requests sent to the gateway itself, and also reciprocate (we want to know when gateway users come online).
-
-> handleInboundStanza _ _ (XMPP.ReceivedPresence (XMPP.Presence {
-> 	XMPP.presenceType = XMPP.PresenceSubscribe,
-> 	XMPP.presenceFrom = Just from,
-> 	XMPP.presenceTo = Just to
-> }))
-> 	| Nothing <- XMPP.jidNode to = do
-> 		log "handleInboundStanza PresenceSubscribe" (from, to)
-> 		return [
-> 				mkStanzaRec $ (XMPP.emptyPresence XMPP.PresenceSubscribed) {
-> 					XMPP.presenceTo = Just from,
-> 					XMPP.presenceFrom = Just to
-> 				},
-> 				mkStanzaRec $ (XMPP.emptyPresence XMPP.PresenceSubscribe) {
-> 					XMPP.presenceTo = Just from,
-> 					XMPP.presenceFrom = Just to
-> 				}
-> 			]
-
-Auto-approve presence subscription requests sent to valid phone numbers.
-
-> 	| Just _ <- mapToVitelity to = do
-> 		log "handleInboundStanza PresenceSubscribe" (from, to)
-> 		return [
-> 				mkStanzaRec $ (XMPP.emptyPresence XMPP.PresenceSubscribed) {
-> 					XMPP.presenceTo = Just from,
-> 					XMPP.presenceFrom = Just to
-> 				}
-> 			]
 
 Match when the inbound stanza is an IQ of type get, with a proper from, to, and some kind of payload.
 
