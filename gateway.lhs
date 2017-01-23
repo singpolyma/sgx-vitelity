@@ -175,7 +175,7 @@ If we fail to convert the destination to a Vitelity JID, send back and delivery 
 
 The XMPP server will send us presence stanzas of type "probe" when someone wants to know the presence of one of our JIDs.
 
-> handleInboundStanza _ _ (XMPP.ReceivedPresence (XMPP.Presence {
+> handleInboundStanza _ _ (XMPP.ReceivedPresence p@(XMPP.Presence {
 > 	XMPP.presenceType = XMPP.PresenceProbe,
 > 	XMPP.presenceFrom = Just from,
 > 	XMPP.presenceTo = Just to
@@ -196,6 +196,20 @@ If there is no localpart, then they are asking for presence of the gateway itsel
 > 				] []
 > 			]
 > 		}]
+
+If there is a valid localpart, then we might as well claim numbers are available.
+
+> 	| Just _ <- mapToVitelity to =
+> 		return [mkStanzaRec $ (XMPP.emptyPresence XMPP.PresenceAvailable) {
+> 			XMPP.presenceTo = Just from,
+> 			XMPP.presenceFrom = Just to
+> 		}]
+
+Everything else is an invalid JID, so return an error.
+
+>	| otherwise = do
+> 		log "PRESENCE TO INVALID JID" p
+> 		return [mkStanzaRec $ presenceError invalidJidError p]
 
 Auto-approve presence subscription requests sent to the gateway itself, and also reciprocate (we want to know when gateway users come online).
 
