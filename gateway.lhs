@@ -9,6 +9,7 @@ Only exporting the main function allows GHC to do more optimisations inside, and
 Switch to BasicPrelude because it's nice.
 
 > import Prelude ()
+> import qualified Prelude
 > import BasicPrelude hiding (log, forM_)
 
 Import all the things!
@@ -150,7 +151,7 @@ And send an SMS about the error, including the message we found if there was one
 No stanzas to send back to the sender at this point, so send back and empty list.
 
 > 						atomically $ sendVitelityCommand $
-> 							VitelitySMS creds (XMPP.messageID m) vitelityJid
+> 							VitelitySMS creds (SMSID <$> XMPP.messageID m <*> pure from) vitelityJid
 > 								(s"Error sending message" ++ maybe mempty (s": " ++) errorTxt)
 > 						return []
 
@@ -163,7 +164,7 @@ No stanzas to send back to the sender at this point, so send back and empty list
 
 > 			(Just creds, Just body) -> do
 > 				atomically $ sendVitelityCommand $
-> 					VitelitySMS creds (XMPP.messageID m) vitelityJid body
+> 					VitelitySMS creds (SMSID <$> XMPP.messageID m <*> pure from) vitelityJid body
 > 				return []
 
 If we fail to convert the destination to a Vitelity JID, send back and delivery error stanza.
@@ -409,9 +410,9 @@ The vitelityManager takes commands from other threads using this datatype.
 
 > data VitelityCommand =
 
-The most obvious command is one to send an SMS.  We'll need the relevant credentials, maybe a stanza ID (so that errors can come back with the same ID), the destination JID, and the body of the SMS.
+The most obvious command is one to send an SMS.  We'll need the relevant credentials, maybe a stanza ID and component-side source JID (so that errors can be sent back), the destination JID, and the body of the SMS.
 
-> 	VitelitySMS VitelityCredentials (Maybe Text) XMPP.JID Text |
+> 	VitelitySMS VitelityCredentials (Maybe SMSID) XMPP.JID Text |
 
 We also need a way to tell the manager where to route incoming SMSs from a given connection to Vitelity.
 
@@ -439,7 +440,7 @@ Here we actually handle the `vitelityManager` commands.
 If we are sending an SMS and a session for those credentials is already connected, format the SMS into an XMPP Stanza and write it to the correct session.  No change to the sessions map, so just return the one we have.
 
 > 	| Just (sendToVitelity, _) <- Map.lookup creds vitelitySessions = do
-> 		atomically $ sendToVitelity $ mkStanzaRec $ (mkSMS to body) { XMPP.messageID = smsID }
+> 		atomically $ sendToVitelity $ mkStanzaRec $ (mkSMS to body) { XMPP.messageID = show <$> smsID }
 > 		return vitelitySessions
 
 Otherwise, we have never connected for this DID.  Highly irregular.  Log this strange situation, try to create the registration, and then retry the SMS.
@@ -514,13 +515,16 @@ Inbound loop is very similar too, considering exceptions fatal and killing the o
 > 		case stanza of
 > 			XMPP.ReceivedMessage m
 
-If the stanza is a message error, basically just pass it through the gateway to the originator.  Well, it should be to the originator, but we don't store anything that would let us determine that.  So we send the error to every subscriber for now.  The ID should match the original message (because we copied the inbound IDs onto our outbound stanzas to Vitelity, remember?) so we just need to change the from and to according to what subscribers expect.
+If the stanza is a message error, basically just pass it through the gateway to the originator.  We encoded the originator into the id when we sent the message, so it is included here in any error reply.  We can parse the ID to get back the original message id and originator JID to send the error back to.
 
 > 				| XMPP.messageType m == XMPP.MessageError,
 > 				  Just from <- mapToComponent =<< XMPP.messageFrom m ->
-> 					liftIO $ atomically $ mapM_ (\to ->
-> 						sendToComponent $ mkStanzaRec (m { XMPP.messageTo = Just to, XMPP.messageFrom = Just from })
-> 					) subscribers
+> 					let smsID = readZ =<< fmap textToString (XMPP.messageID m) in
+> 					liftIO $ atomically $ sendToComponent $ mkStanzaRec (m {
+> 						XMPP.messageID = fmap smsidID smsID,
+> 						XMPP.messageTo = fmap smsidFrom smsID,
+> 						XMPP.messageFrom = Just from
+> 					})
 
 Other messages are inbound SMS.  Make sure we can map the source to a JID in the expected format, and that there's a usable message body.  Then send the message out to all subscribers to this DID.
 
@@ -638,6 +642,20 @@ The XMPP library we're using has Stanza as a typeclass and everything polymorphi
 > 	stanzaLang (StanzaRec _ _ _ lang _ _) = lang
 > 	stanzaPayloads (StanzaRec _ _ _ _ payloads _) = payloads
 > 	stanzaToElement (StanzaRec _ _ _ _ _ element) = element
+
+We encode the original sender into IDs sent to Vitelity so that we can reply errors properly.
+
+> data SMSID = SMSID { smsidID :: Text, smsidFrom :: XMPP.JID }
+
+> instance Show SMSID where
+> 	show (SMSID sid from) = Prelude.show (sid, XMPP.formatJID from)
+
+> instance Read SMSID where
+> 	readsPrec n str = foldl' (\acc ((sid, fromS), leftover) ->
+> 			case XMPP.parseJID fromS of
+> 				Just from -> (SMSID sid from, leftover) : acc
+> 				Nothing -> acc
+> 		) [] (readsPrec n str)
 
 It takes two lines to open a Tokyo Cabinet with the bindings we're using.  Too many lines!  Wrap it in a function.
 
