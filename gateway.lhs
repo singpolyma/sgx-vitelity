@@ -17,13 +17,14 @@ Import all the things!
 > import Control.Concurrent
 > import Control.Concurrent.STM
 > import Data.Foldable (forM_)
-> import Data.Time (getCurrentTime)
-> import Control.Error (exceptT, fmapLT, runExceptT, syncIO, readZ, ExceptT, hoistEither)
+> import Data.Time (getCurrentTime, addUTCTime)
+> import Control.Error (hush, exceptT, fmapLT, runExceptT, syncIO, readZ, ExceptT, hoistEither)
 > import UnexceptionalIO (Unexceptional)
 > import Network (PortID(PortNumber))
 > import System.IO (stdout, stderr, hSetBuffering, BufferMode(LineBuffering))
 > import System.Random (Random(randomR), getStdRandom)
 > import "monads-tf" Control.Monad.Error (catchError) -- ick
+> import Data.Attoparsec.Text (Parser, takeText, string, parseOnly, decimal)
 > import Data.XML.Types (
 > 	Content(ContentText),
 > 	Element(..),
@@ -88,9 +89,16 @@ Catch any exceptions, and log the result on termination, successful or not.
 > 			componentSecret
 > 			(component db componentOut (writeTQueue vitelityCommands))
 
+Start up a service that stiches together multipart messages from Vitelity.
+
+> 	multipartMessages <- newTQueueIO
+> 	void $ forkIO $ forever $ threadDelay 1500000 >> atomically (writeTQueue multipartMessages TimerExpire)
+> 	void $ forkIO $ multipartStitcher (readTQueue multipartMessages)
+> 		(writeTQueue vitelityCommands) (mapFromVitelity componentJidText) (writeTQueue componentOut)
+
 Now we start up the service that will manage all our connections to Vitelity and route messages.
 
-> 	vitelityManager (readTQueue vitelityCommands) (mapFromVitelity componentJidText) (writeTQueue componentOut)
+> 	vitelityManager (readTQueue vitelityCommands) (mapFromVitelity componentJidText) (writeTQueue componentOut) (writeTQueue multipartMessages)
 
 This is where we handle talking to the XMPP server as an external component.  After the connection is created above, it delegates control of that connection here.
 
@@ -423,18 +431,18 @@ We also define a simple type synonym for the Map that holds our active connectio
 
 The manager itself is a forever recursion that waits on commands coming in and handles one at a time using `oneVitelityCommand`.  The result of `oneVitelityCommand` becomes the new Map for the next iteration.
 
-> vitelityManager :: STM VitelityCommand -> (XMPP.JID -> Maybe XMPP.JID) -> (StanzaRec -> STM ()) -> IO ()
-> vitelityManager getVitelityCommand mapToComponent sendToComponent = go Map.empty
+> vitelityManager :: STM VitelityCommand -> (XMPP.JID -> Maybe XMPP.JID) -> (StanzaRec -> STM ()) -> (MultipartMessage -> STM ()) -> IO ()
+> vitelityManager getVitelityCommand mapToComponent sendToComponent sendToMultipart = go Map.empty
 > 	where
 > 	go vitelitySessions =
 > 		atomically getVitelityCommand >>=
-> 		oneVitelityCommand mapToComponent sendToComponent vitelitySessions >>=
+> 		oneVitelityCommand mapToComponent sendToComponent sendToMultipart vitelitySessions >>=
 > 		go
 
 Here we actually handle the `vitelityManager` commands.
 
-> oneVitelityCommand :: (XMPP.JID -> Maybe XMPP.JID) -> (StanzaRec -> STM ()) -> VitelityManagerState -> VitelityCommand -> IO VitelityManagerState
-> oneVitelityCommand mapToComponent sendToComponent vitelitySessions sms@(VitelitySMS creds@(VitelityCredentials did _) smsID to body)
+> oneVitelityCommand :: (XMPP.JID -> Maybe XMPP.JID) -> (StanzaRec -> STM ()) -> (MultipartMessage -> STM ()) -> VitelityManagerState -> VitelityCommand -> IO VitelityManagerState
+> oneVitelityCommand mapToComponent sendToComponent sendToMultipart vitelitySessions sms@(VitelitySMS creds@(VitelityCredentials did _) smsID to body)
 
 If we are sending an SMS and a session for those credentials is already connected, format the SMS into an XMPP Stanza and write it to the correct session.  No change to the sessions map, so just return the one we have.
 
@@ -446,12 +454,12 @@ Otherwise, we have never connected for this DID.  Highly irregular.  Log this st
 
 > 	| otherwise = do
 > 		log "oneVitelityCommand" ("No session found for", did)
-> 		newSessions <- oneVitelityCommand mapToComponent sendToComponent vitelitySessions (VitelityRegistration [] creds)
-> 		oneVitelityCommand mapToComponent sendToComponent newSessions sms
+> 		newSessions <- oneVitelityCommand mapToComponent sendToComponent sendToMultipart vitelitySessions (VitelityRegistration [] creds)
+> 		oneVitelityCommand mapToComponent sendToComponent sendToMultipart newSessions sms
 
 When asked to create a registration, first check if we already have an active session for these credentials (could happen if multiple remote JIDs are all registered through the same Vitelity DID).  If so, just add new subscribers to that session.
 
-> oneVitelityCommand mapToComponent sendToComponent vitelitySessions (VitelityRegistration jids creds@(VitelityCredentials did _))
+> oneVitelityCommand mapToComponent sendToComponent sendToMultipart vitelitySessions (VitelityRegistration jids creds@(VitelityCredentials did _))
 > 	| Just (_, addJidSubscription) <- Map.lookup creds vitelitySessions = do
 > 		log "oneVitelityCommand" ("New subscription for", jids, did)
 > 		atomically $ mapM_ addJidSubscription jids
@@ -461,26 +469,32 @@ Otherwise, we need to actually start up a new session.  Then add the subscribers
 
 > 	| otherwise = do
 > 		log "oneVitelityCommand" ("New registration for", jids, did)
-> 		session@(_, addJidSubscription) <- vitelitySession mapToComponent sendToComponent creds
+> 		session@(_, addJidSubscription) <- vitelitySession mapToComponent sendToComponent sendToMultipart creds
 > 		atomically $ mapM_ addJidSubscription jids
 > 		return $! Map.insert creds session vitelitySessions
 
 Here we take some `VitelityCredentials` and actually create the XMPP connection, setting up a bunch of last-ditch exception handling and forever-reconnection logic while we're at it.
 
-> vitelitySession :: (XMPP.JID -> Maybe XMPP.JID) -> (StanzaRec -> STM ()) -> VitelityCredentials -> IO (StanzaRec -> STM (), XMPP.JID -> STM ())
-> vitelitySession mapToComponent sendToComponent creds@(VitelityCredentials did _) = do
+> vitelitySession :: (XMPP.JID -> Maybe XMPP.JID) -> (StanzaRec -> STM ()) -> (MultipartMessage -> STM ()) -> VitelityCredentials -> IO (StanzaRec -> STM (), XMPP.JID -> STM ())
+> vitelitySession mapToComponent sendToComponent sendToMultipart creds@(VitelityCredentials did _) = do
 
 The outbound stanza channel is similar to what we used before for the component.  Subscriber JIDs are just stored in a threadsafe mutable variable for now.
 
 > 	sendStanzas <- newTQueueIO
 > 	subscriberJids <- newTVarIO []
 
+Build a helper for the vitelityClient to send messages for multipart processing annotated with the right information.
+
+> 	let msgToMultipart = \m -> do
+> 		subs <- readTVar subscriberJids
+> 		sendToMultipart (NewPart creds m subs)
+
 Loop forever in case the connection dies, log any result.  Connect to the server and then delegate responsability for the connection to a hanlder.
 
 > 	void $ forkIO $ forever $ do
 > 		log "vitelitySession" ("Starting", did)
 > 		result <- runExceptT $ vitelityConnect creds
-> 			(vitelityClient (readTQueue sendStanzas) (readTVar subscriberJids) mapToComponent sendToComponent)
+> 			(vitelityClient (readTQueue sendStanzas) (readTVar subscriberJids) mapToComponent sendToComponent msgToMultipart)
 > 		log "vitelitySession" ("Ended", result)
 
 The caller doesn't need to know about our internals, just pass back usable actions to allow adding to the stanza channel and the subscriber list.
@@ -489,8 +503,8 @@ The caller doesn't need to know about our internals, just pass back usable actio
 
 Once a particular connection to Vitelity has been established, control is trasferred here.
 
-> vitelityClient :: STM StanzaRec -> STM [XMPP.JID] -> (XMPP.JID -> Maybe XMPP.JID) -> (StanzaRec -> STM ()) -> XMPP.XMPP ()
-> vitelityClient getNextOutput getSubscriberJids mapToComponent sendToComponent = do
+> vitelityClient :: STM StanzaRec -> STM [XMPP.JID] -> (XMPP.JID -> Maybe XMPP.JID) -> (StanzaRec -> STM ()) -> (XMPP.Message -> STM ()) -> XMPP.XMPP ()
+> vitelityClient getNextOutput getSubscriberJids mapToComponent sendToComponent msgToMultipart = do
 
 First, set our presence to available.
 
@@ -522,19 +536,73 @@ If the stanza is a message error, basically just pass it through the gateway to 
 > 						sendToComponent $ mkStanzaRec (m { XMPP.messageTo = Just to, XMPP.messageFrom = Just from })
 > 					) subscribers
 
-Other messages are inbound SMS.  Make sure we can map the source to a JID in the expected format, and that there's a usable message body.  Then send the message out to all subscribers to this DID.
+Other messages are inbound SMS.  Send them on to be possibly processed as multipart messages.
 
-> 				| Just from <- mapToComponent =<< XMPP.messageFrom m,
-> 				  Just txt <- getBody "jabber:client" m ->
-> 					liftIO $ atomically $ mapM_ (\to ->
-> 						sendToComponent $ mkStanzaRec ((mkSMS to txt) { XMPP.messageFrom = Just from })
-> 					) subscribers
+> 				| otherwise -> liftIO $ atomically $ msgToMultipart m
 
 Otherwise Vitelity is just sending us some other thing we don't care about (like presence or something).  Ignore it for now.
 
 > 			_ -> return ()
 
+Vitelity doesn't handle long-messages very well, but they *do* provide us enough information to at least try stitching together long inbound messages ourselves.
+
+> data MultipartMessage = NewPart VitelityCredentials XMPP.Message [XMPP.JID] | TimerExpire
+
+> multipartStitcher :: STM MultipartMessage -> (VitelityCommand -> STM ()) -> (XMPP.JID -> Maybe XMPP.JID) -> (StanzaRec -> STM ()) -> IO ()
+> multipartStitcher getMsg sendToVitelity mapToComponent sendToComponent =
+> 	go mempty
+> 	where
+> 	go state = do
+> 		msg <- atomically getMsg
+> 		time <- getCurrentTime
+> 		oneMsg state time msg >>= go
+> 	oneMsg state time (NewPart creds m@(XMPP.Message { XMPP.messageFrom = Just from }) subscribers)
+> 		| total == 1 + Map.size chunks = do
+> 			let fullText = mconcat $ map snd $ Map.toAscList (Map.insert part txt chunks)
+> 			forM_ (mapToComponent from) $ \cFrom -> atomically $ forM_ subscribers $ \subscriber ->
+> 				sendToComponent $ mkStanzaRec ((mkSMS subscriber fullText) { XMPP.messageFrom = Just cFrom })
+> 			return state'
+> 		| otherwise =
+> 			return $ Map.insertWith (\(_, single) (_, existingChunks) ->
+> 				(time, existingChunks ++ single)
+> 			) (from,creds,total) (time, Map.singleton part txt) state
+> 		where
+> 		Chunk part total txt = parseChunk (fromMaybe mempty $ getBody "jabber:client" m)
+> 		((_, chunks), state') = mapLookupDelete (from,creds,total) state
+> 		mapLookupDelete k = first (fromMaybe (time, mempty)) . Map.updateLookupWithKey (\_ _ -> Nothing) k
+> 	oneMsg state _ (NewPart _ m _) = do
+> 		log "multipartStitcher.oneMsg missing from" m
+> 		return state
+> 	oneMsg state time TimerExpire = do
+> 		forM_ (Map.keys expired) $ \(from, creds, total) ->
+> 			let errorText = mconcat [
+> 					s"Not all parts of your message with ",
+> 					show total,
+> 					s" parts arrived. Please send again."
+> 				]
+> 			in
+> 				atomically $ sendToVitelity $ VitelitySMS creds Nothing from errorText
+> 		return unexpired
+> 		where
+> 		(expired, unexpired) = Map.partition (\(t, _) -> time > 60 `addUTCTime` t) state
+
 And that's it!  Of course, there's some more little helpers we should build to make the above work out.
+
+Parse each multipart message into a Chunk containing which message in the series this is, the total count of messages, and this part of the text.
+
+> data Chunk = Chunk Int Int Text
+
+> chunkParser :: Parser Chunk
+> chunkParser =
+> 	Chunk <$>
+> 	(string (fromString "part:") *> decimal) <*>
+> 	(string (fromString ":of:") *> decimal) <*>
+> 	(string (fromString ":") *> takeText)
+
+Messages that aren't one of many can be treated as a Chunk part 1 of 1.
+
+> parseChunk :: Text -> Chunk
+> parseChunk txt = fromMaybe (Chunk 1 1 txt) (hush $ parseOnly chunkParser txt)
 
 We need a way to turn VitelityCredentials into an actual XMPP client connection to Vitelity.
 
@@ -715,3 +783,8 @@ And similar helpers to reply to IQ stanzas with both success and error cases.
 > iqError payload iq = (iqReply (Just payload) iq) {
 > 	XMPP.iqType = XMPP.IQError
 > }
+
+We want to be able to use JIDs as keys in Maps, so there need to be an Ord instance.
+
+> instance Ord XMPP.JID where
+> 	compare x y = compare (show x) (show y)
