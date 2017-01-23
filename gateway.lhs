@@ -264,8 +264,8 @@ If there is no localpart, then they are asking for presence of the gateway itsel
 > 				Element (s"{http://jabber.org/protocol/caps}c") [
 > 					(s"{http://jabber.org/protocol/caps}hash", [ContentText $ s"sha-1"]),
 > 					(s"{http://jabber.org/protocol/caps}node", [ContentText $ s"xmpp:vitelity.soprani.ca"]),
-> 					-- gateway/sms//Soprani.ca Gateway to XMPP - Vitelity<jabber:iq:gateway<jabber:iq:register<urn:xmpp:ping<
-> 					(s"{http://jabber.org/protocol/caps}ver", [ContentText $ s"4vgIzfYSo8iks5Em0Pe4WS/oE18="])
+> 					-- gateway/sms//Soprani.ca Gateway to XMPP - Vitelity<jabber:iq:register<
+> 					(s"{http://jabber.org/protocol/caps}ver", [ContentText $ s"fo196MetxfqJ9TGvq2Q16893DGg="])
 > 				] []
 > 			]
 > 		}]
@@ -324,13 +324,7 @@ If the IQ was send to a JID with no localpart, then the query is for the gateway
 > 						(s"{http://jabber.org/protocol/disco#info}name", [ContentText $ s"Soprani.ca Gateway to XMPP - Vitelity"])
 > 					] [],
 > 					NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
-> 						(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"jabber:iq:gateway"])
-> 					] [],
-> 					NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
 > 						(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"jabber:iq:register"])
-> 					] [],
-> 					NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
-> 						(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"urn:xmpp:ping"])
 > 					] []
 > 				]
 > 			]
