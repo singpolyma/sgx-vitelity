@@ -38,6 +38,14 @@ Import all the things!
 > import qualified Database.TokyoCabinet as TC
 > import qualified Network.Protocol.XMPP as XMPP
 
+Some constants for our name and version.
+
+> softwareName :: Text
+> softwareName = s"Soprani.ca Gateway to XMPP - Vitelity"
+
+> softwareVersion :: Text
+> softwareVersion = s"0.1.0"
+
 A nice data type for credentials to use when connecting to Vitelity.  First Text is DID, second Text is s.ms password.  Derive Eq and Ord so that credentials can be used as keys in the `vitelityManager` Map.  Derive Show and Read as a simple way to serialize this into the database.
 
 > data VitelityCredentials = VitelityCredentials Text Text deriving (Eq, Ord, Show, Read)
@@ -191,8 +199,8 @@ If there is no localpart, then they are asking for presence of the gateway itsel
 > 				Element (s"{http://jabber.org/protocol/caps}c") [
 > 					(s"{http://jabber.org/protocol/caps}hash", [ContentText $ s"sha-1"]),
 > 					(s"{http://jabber.org/protocol/caps}node", [ContentText $ s"xmpp:vitelity.soprani.ca"]),
-> 					-- gateway/sms//Soprani.ca Gateway to XMPP - Vitelity<jabber:iq:register<
-> 					(s"{http://jabber.org/protocol/caps}ver", [ContentText $ s"fo196MetxfqJ9TGvq2Q16893DGg="])
+> 					-- gateway/sms//Soprani.ca Gateway to XMPP - Vitelity<jabber:iq:register<jabber:iq:version<
+> 					(s"{http://jabber.org/protocol/caps}ver", [ContentText $ s"vrwpSMxt6ynZQZmLrVNHWxZHkjI="])
 > 				] []
 > 			]
 > 		}]
@@ -202,7 +210,15 @@ If there is a valid localpart, then we might as well claim numbers are available
 > 	| Just _ <- mapToVitelity to =
 > 		return [mkStanzaRec $ (XMPP.emptyPresence XMPP.PresenceAvailable) {
 > 			XMPP.presenceTo = Just from,
-> 			XMPP.presenceFrom = Just to
+> 			XMPP.presenceFrom = Just to,
+> 			XMPP.presencePayloads = [
+> 				Element (s"{http://jabber.org/protocol/caps}c") [
+> 					(s"{http://jabber.org/protocol/caps}hash", [ContentText $ s"sha-1"]),
+> 					(s"{http://jabber.org/protocol/caps}node", [ContentText $ s"xmpp:vitelity.soprani.ca/sgx"]),
+> 					-- client/sms//Soprani.ca Gateway to XMPP - Vitelity<jabber:iq:version<
+> 					(s"{http://jabber.org/protocol/caps}ver", [ContentText $ s"Xyjv2vDeRUglY9xigEbdkBIkPSE="])
+> 				] []
+> 			]
 > 		}]
 
 Everything else is an invalid JID, so return an error.
@@ -321,8 +337,6 @@ Otherwise, the user has made a serious mistake, and we will have to return an er
 
 > 			_ -> return [mkStanzaRec $ iqError badRegistrationInfoError iq]
 
-
-
 Match when the inbound stanza is an IQ of type get, with a proper from, to, and some kind of payload.
 
 > handleInboundStanza _ _ (XMPP.ReceivedIQ iq@(XMPP.IQ {
@@ -343,13 +357,44 @@ If the IQ was send to a JID with no localpart, then the query is for the gateway
 > 					NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}identity") [
 > 						(s"{http://jabber.org/protocol/disco#info}category", [ContentText $ s"gateway"]),
 > 						(s"{http://jabber.org/protocol/disco#info}type", [ContentText $ s"sms"]),
-> 						(s"{http://jabber.org/protocol/disco#info}name", [ContentText $ s"Soprani.ca Gateway to XMPP - Vitelity"])
+> 						(s"{http://jabber.org/protocol/disco#info}name", [ContentText $ softwareName])
 > 					] [],
 > 					NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
-> 						(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"jabber:iq:register"])
+> 						(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"jabber:iq:register"]),
+> 						(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"jabber:iq:version"])
 > 					] []
 > 				]
 > 			]
+
+XEP-0030 info queries sent to a valid JID respond with the capabilities nodes have.
+
+> 	| Just _ <- mapToVitelity to,
+> 	  [_] <- isNamed (s"{http://jabber.org/protocol/disco#info}query") p = do
+> 		log "DISCO ON NODE" (from, to, p)
+> 		return [mkStanzaRec $ (`iqReply` iq) $ Just $
+> 				Element (s"{http://jabber.org/protocol/disco#info}query") []
+> 				[
+> 					NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}identity") [
+> 						(s"{http://jabber.org/protocol/disco#info}category", [ContentText $ s"client"]),
+> 						(s"{http://jabber.org/protocol/disco#info}type", [ContentText $ s"sms"]),
+> 						(s"{http://jabber.org/protocol/disco#info}name", [ContentText $ softwareName])
+> 					] [],
+> 					NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
+> 						(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"jabber:iq:version"])
+> 					] []
+> 				]
+> 			]
+
+If someone asks us what our software version is, we tell them
+
+> 	| [_] <- isNamed (s"{jabber:iq:version}query") p =
+> 		return [mkStanzaRec $ (`iqReply` iq) $ Just $
+> 			Element (s"{jabber:iq:version}query") []
+> 			[
+> 				NodeElement $ Element (s"{jabber:iq:version}name") [] [NodeContent $ ContentText $ softwareName],
+> 				NodeElement $ Element (s"{jabber:iq:version}version") [] [NodeContent $ ContentText $ softwareVersion]
+> 			]
+> 		]
 
 Un-handled IQ requests should be at least replied to with an error.  It's the polite thing to do.
 
