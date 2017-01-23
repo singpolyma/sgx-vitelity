@@ -199,7 +199,7 @@ If there is no localpart, then they are asking for presence of the gateway itsel
 
 Auto-approve presence subscription requests sent to the gateway itself, and also reciprocate (we want to know when gateway users come online).
 
-> handleInboundStanza _ _ (XMPP.ReceivedPresence (XMPP.Presence {
+> handleInboundStanza _ _ (XMPP.ReceivedPresence p@(XMPP.Presence {
 > 	XMPP.presenceType = XMPP.PresenceSubscribe,
 > 	XMPP.presenceFrom = Just from,
 > 	XMPP.presenceTo = Just to
@@ -227,6 +227,12 @@ Auto-approve presence subscription requests sent to valid phone numbers.
 > 					XMPP.presenceFrom = Just to
 > 				}
 > 			]
+
+Everything else is an invalid JID, so return an error.
+
+>	| otherwise = do
+> 		log "PRESENCE TO INVALID JID" p
+> 		return [mkStanzaRec $ presenceError invalidJidError p]
 
 If we match an iq "get" requesting the registration form, then deliver back the form in XEP-0077 format.
 
@@ -736,6 +742,15 @@ Reverse to and from so that the error goes back to the sender.
 And append the extra error information to the payload.
 
 > 	XMPP.messagePayloads = XMPP.messagePayloads m ++ [payload]
+> }
+
+And a similar helper for presence stanzas.
+
+> presenceError :: Element -> XMPP.Presence -> XMPP.Presence
+> presenceError payload p = p {
+> 	XMPP.presenceFrom = XMPP.presenceTo p,
+> 	XMPP.presenceTo = XMPP.presenceFrom p,
+> 	XMPP.presencePayloads = XMPP.presencePayloads p ++ [payload]
 > }
 
 And similar helpers to reply to IQ stanzas with both success and error cases.
