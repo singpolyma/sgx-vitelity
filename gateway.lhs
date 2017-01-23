@@ -482,7 +482,26 @@ Loop forever in case the connection dies, log any result.  Connect to the server
 > 		log "vitelitySession" ("Starting", did)
 > 		result <- runExceptT $ vitelityConnect creds
 > 			(vitelityClient (readTQueue sendStanzas) (readTVar subscriberJids) mapToComponent sendToComponent)
-> 		log "vitelitySession" ("Ended", result)
+> 		case result of
+
+In the case of authentication failure, send a headline to all subscribers telling them authentication has failed.  Then just eat any messages they try to send and reply with the auth error.
+
+> 			Left (XMPP.AuthenticationFailure _) -> do
+> 				subscribers <- atomically $ readTVar subscriberJids
+> 				atomically $ forM_ subscribers $ \to ->
+> 					sendToComponent $ mkStanzaRec ((mkSMS to vitelityAuthErrorMsg) {
+> 						XMPP.messageType = XMPP.MessageHeadline
+> 					})
+> 				forever $ do
+> 					attemptedStanza <- atomically $ readTQueue sendStanzas
+> 					let smsID = readZ =<< fmap textToString (XMPP.stanzaID attemptedStanza)
+> 					atomically $ sendToComponent $ mkStanzaRec $ messageError vitelityAuthError ((XMPP.emptyMessage XMPP.MessageError) {
+> 							XMPP.messageID = fmap smsidID smsID,
+> 							XMPP.messageTo = mapToComponent =<< XMPP.stanzaTo attemptedStanza,
+> 							XMPP.messageFrom = fmap smsidFrom smsID,
+> 							XMPP.messagePayloads = XMPP.stanzaPayloads attemptedStanza
+> 						})
+> 			_ -> log "vitelitySession" ("Ended", result)
 
 The caller doesn't need to know about our internals, just pass back usable actions to allow adding to the stanza channel and the subscriber list.
 
@@ -681,7 +700,10 @@ This is the error to send back when we get a message with no body.
 > noBodyError = errorPayload "modify" "not-acceptable" (s"There was no body on the message you sent.") []
 
 > vitelityAuthError :: Element
-> vitelityAuthError = errorPayload "auth" "not-authorized" (s"There was an error connecting to Vitelity with the provided credentials.") []
+> vitelityAuthError = errorPayload "auth" "not-authorized" vitelityAuthErrorMsg []
+
+> vitelityAuthErrorMsg :: Text
+> vitelityAuthErrorMsg = s"There was an error connecting to Vitelity with the provided credentials."
 
 > badRegistrationInfoError :: Element
 > badRegistrationInfoError = errorPayload "modify" "not-acceptable" (s"Bad phone number format or missing password.") []
