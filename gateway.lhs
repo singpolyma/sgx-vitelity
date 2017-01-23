@@ -525,7 +525,8 @@ If the stanza is a message error, basically just pass it through the gateway to 
 Other messages are inbound SMS.  Make sure we can map the source to a JID in the expected format, and that there's a usable message body.  Then send the message out to all subscribers to this DID.
 
 > 				| Just from <- mapToComponent =<< XMPP.messageFrom m,
-> 				  Just txt <- getBody "jabber:client" m ->
+> 				  Just txt <- getBody "jabber:client" m,
+> 				  not (s"(SMSSERVER) " `T.isPrefixOf` txt) ->
 > 					liftIO $ atomically $ mapM_ (\to ->
 > 						sendToComponent $ mkStanzaRec ((mkSMS to txt) { XMPP.messageFrom = Just from })
 > 					) subscribers
