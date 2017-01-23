@@ -199,8 +199,8 @@ If there is no localpart, then they are asking for presence of the gateway itsel
 > 				Element (s"{http://jabber.org/protocol/caps}c") [
 > 					(s"{http://jabber.org/protocol/caps}hash", [ContentText $ s"sha-1"]),
 > 					(s"{http://jabber.org/protocol/caps}node", [ContentText $ s"xmpp:vitelity.soprani.ca"]),
-> 					-- gateway/sms//Soprani.ca Gateway to XMPP - Vitelity<jabber:iq:register<jabber:iq:version<
-> 					(s"{http://jabber.org/protocol/caps}ver", [ContentText $ s"vrwpSMxt6ynZQZmLrVNHWxZHkjI="])
+> 					-- gateway/sms//Soprani.ca Gateway to XMPP - Vitelity<jabber:iq:register<jabber:iq:version<vcard-temp<
+> 					(s"{http://jabber.org/protocol/caps}ver", [ContentText $ s"fM5iv/aMLmSbJBivCilUAI0MUFY="])
 > 				] []
 > 			]
 > 		}]
@@ -361,7 +361,8 @@ If the IQ was send to a JID with no localpart, then the query is for the gateway
 > 					] [],
 > 					NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
 > 						(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"jabber:iq:register"]),
-> 						(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"jabber:iq:version"])
+> 						(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"jabber:iq:version"]),
+> 						(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"vcard-temp"])
 > 					] []
 > 				]
 > 			]
@@ -384,6 +385,18 @@ XEP-0030 info queries sent to a valid JID respond with the capabilities nodes ha
 > 					] []
 > 				]
 > 			]
+
+If the IQ was send to a JID with no localpart, then the query is for the gateway itself.  So if the request is for the vCard of the gateway, return according to XEP-0054.
+
+> 	| Nothing <- XMPP.jidNode to,
+> 	  [_] <- isNamed (s"{vcard-temp}vCard") p =
+> 		return [mkStanzaRec $ (`iqReply` iq) $ Just $
+> 			Element (s"{vcard-temp}vCard") []
+> 			[
+> 				NodeElement $ Element (s"{vcard-temp}URL") [] [NodeContent $ ContentText $ s"https://github.com/singpolyma/sgx-vitelity"],
+> 				NodeElement $ Element (s"{vcard-temp}DESC") [] [NodeContent $ ContentText $ s"This is an XMPP-to-SMS gateway using vitelity.com as the backend. © Stephen Paul Weber, licensed under AGPLv3+.\n\nSource code for this gateway is available from the listed homepage.\n\nPart of the Soprani.ca project."]
+> 			]
+> 		]
 
 If someone asks us what our software version is, we tell them
 
