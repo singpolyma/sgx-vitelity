@@ -623,6 +623,7 @@ Other messages are inbound SMS.  Make sure we can map the source to a JID in the
 
 > 				| Just from <- mapToComponent =<< XMPP.messageFrom m,
 > 				  Just txt <- getBody "jabber:client" m,
+> 				  not (s"You are not authorized to send SMS messages." == txt),
 > 				  not (s"(SMSSERVER) " `T.isPrefixOf` txt) ->
 > 					liftIO $ atomically $ mapM_ (\to ->
 > 						sendToComponent $ mkStanzaRec ((mkSMS to txt) { XMPP.messageFrom = Just from })
