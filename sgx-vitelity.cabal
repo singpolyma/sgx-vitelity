@@ -1,6 +1,6 @@
 name:            sgx-vitelity
 version:         0.0.1
-cabal-version:   >= 1.16
+cabal-version:   >= 1.14
 license:         OtherLicense
 license-file:    COPYING
 category:        Network
@@ -34,7 +34,7 @@ executable sgx-vitelity
                 network,
                 network-protocol-xmpp >= 0.4.8,
                 random,
-                stm,
+                stm >= 2.4,
                 text,
                 time,
                 tokyocabinet-haskell >= 0.0.5,
