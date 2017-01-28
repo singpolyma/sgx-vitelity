@@ -1,0 +1,46 @@
+name:            sgx-vitelity
+version:         0.0.1
+cabal-version:   >= 1.16
+license:         OtherLicense
+license-file:    COPYING
+category:        Network
+copyright:       © 2017 Stephen Paul Weber
+author:          Stephen Paul Weber <singpolyma@singpolyma.net>
+maintainer:      Stephen Paul Weber <singpolyma@singpolyma.net>
+stability:       experimental
+tested-with:     GHC == 7.6.3
+synopsis:        An XMPP gateway to SMS using Vitelity as the backend.
+homepage:        https://github.com/singpolyma/sgx-vitelity
+bug-reports:     https://github.com/singpolyma/vgx-vitelity/issues
+build-type:      Simple
+description:
+        An XMPP gateway to SMS, backed by Vitelity.
+        
+        The source is Literate Haskell, and should be fairly readable.
+
+extra-source-files:
+        README
+
+executable sgx-vitelity
+        main-is: gateway.lhs
+        default-language: Haskell2010
+
+        build-depends:
+                base == 4.*,
+                basic-prelude >= 0.3.4.0,
+                containers,
+                errors >= 2.1.0,
+                monads-tf,
+                network,
+                network-protocol-xmpp >= 0.4.8,
+                random,
+                stm,
+                text,
+                time,
+                tokyocabinet-haskell >= 0.0.5,
+                unexceptionalio >= 0.3.0,
+                xml-types
+
+source-repository head
+        type:     git
+        location: git://github.com/singpolyma/sgx-vitelity.git

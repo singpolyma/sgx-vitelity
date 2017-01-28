@@ -1,0 +1,3 @@
+An XMPP gateway to SMS, backed by Vitelity.
+
+The source is Literate Haskell, and should be fairly readable.
