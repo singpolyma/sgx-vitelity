@@ -139,6 +139,10 @@ We look up the credentials in the database here so that we can send back an erro
 
 > 		maybeCreds <- fetchVitelityCredentials db from
 > 		case (maybeCreds, getBody "jabber:component:accept" m) of
+
+If there are no credentials, then we either send back an error or (if the message itself is an error) do nothing (to prevent error-reply-to-error infinite loops).
+
+> 			(Nothing, _) | XMPP.messageType m == XMPP.MessageError -> return []
 > 			(Nothing, _) -> return [mkStanzaRec $ messageError registrationRequiredError m]
 
 If the message is an error, we don't actually care about the body.  Send an SMS about the error.
