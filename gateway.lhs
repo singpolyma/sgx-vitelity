@@ -361,7 +361,7 @@ If the IQ was send to a JID with no localpart, then the query is for the gateway
 > 					NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}identity") [
 > 						(s"{http://jabber.org/protocol/disco#info}category", [ContentText $ s"gateway"]),
 > 						(s"{http://jabber.org/protocol/disco#info}type", [ContentText $ s"sms"]),
-> 						(s"{http://jabber.org/protocol/disco#info}name", [ContentText $ softwareName])
+> 						(s"{http://jabber.org/protocol/disco#info}name", [ContentText softwareName])
 > 					] [],
 > 					NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
 > 						(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"jabber:iq:register"]),
@@ -382,7 +382,7 @@ XEP-0030 info queries sent to a valid JID respond with the capabilities nodes ha
 > 					NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}identity") [
 > 						(s"{http://jabber.org/protocol/disco#info}category", [ContentText $ s"client"]),
 > 						(s"{http://jabber.org/protocol/disco#info}type", [ContentText $ s"sms"]),
-> 						(s"{http://jabber.org/protocol/disco#info}name", [ContentText $ softwareName])
+> 						(s"{http://jabber.org/protocol/disco#info}name", [ContentText softwareName])
 > 					] [],
 > 					NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
 > 						(s"{http://jabber.org/protocol/disco#info}var", [ContentText $ s"jabber:iq:version"])
@@ -408,8 +408,8 @@ If someone asks us what our software version is, we tell them
 > 		return [mkStanzaRec $ (`iqReply` iq) $ Just $
 > 			Element (s"{jabber:iq:version}query") []
 > 			[
-> 				NodeElement $ Element (s"{jabber:iq:version}name") [] [NodeContent $ ContentText $ softwareName],
-> 				NodeElement $ Element (s"{jabber:iq:version}version") [] [NodeContent $ ContentText $ softwareVersion]
+> 				NodeElement $ Element (s"{jabber:iq:version}name") [] [NodeContent $ ContentText softwareName],
+> 				NodeElement $ Element (s"{jabber:iq:version}version") [] [NodeContent $ ContentText softwareVersion]
 > 			]
 > 		]
 
@@ -627,7 +627,7 @@ Other messages are inbound SMS.  Make sure we can map the source to a JID in the
 
 > 				| Just from <- mapToComponent =<< XMPP.messageFrom m,
 > 				  Just txt <- getBody "jabber:client" m,
-> 				  not (s"You are not authorized to send SMS messages." == txt),
+> 				  s"You are not authorized to send SMS messages." /= txt,
 > 				  not (s"(SMSSERVER) " `T.isPrefixOf` txt) ->
 > 					liftIO $ atomically $ mapM_ (\to ->
 > 						sendToComponent $ mkStanzaRec ((mkSMS "jabber:component:accept" to txt) { XMPP.messageFrom = Just from })
