@@ -518,7 +518,7 @@ Here we actually handle the `vitelityManager` commands.
 If we are sending an SMS and a session for those credentials is already connected, format the SMS into an XMPP Stanza and write it to the correct session.  No change to the sessions map, so just return the one we have.
 
 > 	| Just (sendToVitelity, _) <- Map.lookup creds vitelitySessions = do
-> 		atomically $ sendToVitelity $ mkStanzaRec $ (mkSMS to body) { XMPP.messageID = show <$> smsID }
+> 		atomically $ sendToVitelity $ mkStanzaRec $ (mkSMS "jabber:client" to body) { XMPP.messageID = show <$> smsID }
 > 		return vitelitySessions
 
 Otherwise, we have never connected for this DID.  Highly irregular.  Log this strange situation, try to create the registration, and then retry the SMS.
@@ -567,7 +567,7 @@ In the case of authentication failure, send a headline to all subscribers tellin
 > 			Left (XMPP.AuthenticationFailure _) -> do
 > 				subscribers <- atomically $ readTVar subscriberJids
 > 				atomically $ forM_ subscribers $ \to ->
-> 					sendToComponent $ mkStanzaRec ((mkSMS to vitelityAuthErrorMsg) {
+> 					sendToComponent $ mkStanzaRec ((mkSMS "jabber:component:accept" to vitelityAuthErrorMsg) {
 > 						XMPP.messageType = XMPP.MessageHeadline
 > 					})
 > 				forever $ do
@@ -630,7 +630,7 @@ Other messages are inbound SMS.  Make sure we can map the source to a JID in the
 > 				  not (s"You are not authorized to send SMS messages." == txt),
 > 				  not (s"(SMSSERVER) " `T.isPrefixOf` txt) ->
 > 					liftIO $ atomically $ mapM_ (\to ->
-> 						sendToComponent $ mkStanzaRec ((mkSMS to txt) { XMPP.messageFrom = Just from })
+> 						sendToComponent $ mkStanzaRec ((mkSMS "jabber:component:accept" to txt) { XMPP.messageFrom = Just from })
 > 					) subscribers
 
 Otherwise Vitelity is just sending us some other thing we don't care about (like presence or something).  Ignore it for now.
@@ -685,10 +685,10 @@ Then try to parse the string as VitelityCredentials.
 
 We also want a way to format the XMPP stanzas we use to send SMS (both to Vitelity, and from Vitelity to subscribers).
 
-> mkSMS :: XMPP.JID -> Text -> XMPP.Message
-> mkSMS to txt = (XMPP.emptyMessage XMPP.MessageChat) {
+> mkSMS :: String -> XMPP.JID -> Text -> XMPP.Message
+> mkSMS namespace to txt = (XMPP.emptyMessage XMPP.MessageChat) {
 > 	XMPP.messageTo = Just to,
-> 	XMPP.messagePayloads = [Element (s"{jabber:client}body") [] [NodeContent $ ContentText txt]]
+> 	XMPP.messagePayloads = [Element (fromString $ "{" ++ namespace ++ "}body") [] [NodeContent $ ContentText txt]]
 > }
 
 Here is a way to get the Text representation of the bare part of a JID.
