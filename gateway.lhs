@@ -218,7 +218,7 @@ If there is a valid localpart, then we might as well claim numbers are available
 > 			XMPP.presencePayloads = [
 > 				Element (s"{http://jabber.org/protocol/caps}c") [
 > 					(s"{http://jabber.org/protocol/caps}hash", [ContentText $ s"sha-1"]),
-> 					(s"{http://jabber.org/protocol/caps}node", [ContentText $ s"xmpp:vitelity.soprani.ca/sgx"]),
+> 					(s"{http://jabber.org/protocol/caps}node", [ContentText $ s"xmpp:vitelity.sgx.soprani.ca"]),
 > 					-- client/sms//Soprani.ca Gateway to XMPP - Vitelity<jabber:iq:version<
 > 					(s"{http://jabber.org/protocol/caps}ver", [ContentText $ s"Xyjv2vDeRUglY9xigEbdkBIkPSE="])
 > 				] []
