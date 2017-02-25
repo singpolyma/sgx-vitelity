@@ -532,17 +532,19 @@ When asked to create a registration, first check if we already have an active se
 
 > oneVitelityCommand mapToComponent sendToComponent vitelitySessions (VitelityRegistration jids creds@(VitelityCredentials did _))
 > 	| Just (_, addJidSubscription) <- Map.lookup creds vitelitySessions = do
-> 		log "oneVitelityCommand" ("New subscription for", jids, did)
-> 		atomically $ mapM_ addJidSubscription jids
+> 		log "oneVitelityCommand" ("New subscription for", bareJids, did)
+> 		atomically $ mapM_ addJidSubscription bareJids
 > 		return vitelitySessions
 
 Otherwise, we need to actually start up a new session.  Then add the subscribers, and return a new Map with the new session inserted.
 
 > 	| otherwise = do
-> 		log "oneVitelityCommand" ("New registration for", jids, did)
+> 		log "oneVitelityCommand" ("New registration for", bareJids, did)
 > 		session@(_, addJidSubscription) <- vitelitySession mapToComponent sendToComponent creds
-> 		atomically $ mapM_ addJidSubscription jids
+> 		atomically $ mapM_ addJidSubscription bareJids
 > 		return $! Map.insert creds session vitelitySessions
+> 	where
+> 	bareJids = mapMaybe (XMPP.parseJID . bareTxt) jids
 
 Here we take some `VitelityCredentials` and actually create the XMPP connection, setting up a bunch of last-ditch exception handling and forever-reconnection logic while we're at it.
 
