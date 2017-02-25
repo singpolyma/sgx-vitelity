@@ -193,37 +193,13 @@ The XMPP server will send us presence stanzas of type "probe" when someone wants
 > 	XMPP.presenceTo = Just to
 > }))
 
-If there is no localpart, then they are asking for presence of the gateway itself.  The gateway is always available, and includes XEP-0115 information to help improve service discovery efficiency.
+If there is no localpart, then they are asking for presence of the gateway itself.  The gateway is always available.
 
-> 	| Nothing <- XMPP.jidNode to =
-> 		return [mkStanzaRec $ (XMPP.emptyPresence XMPP.PresenceAvailable) {
-> 			XMPP.presenceTo = Just from,
-> 			XMPP.presenceFrom = Just to,
-> 			XMPP.presencePayloads = [
-> 				Element (s"{http://jabber.org/protocol/caps}c") [
-> 					(s"{http://jabber.org/protocol/caps}hash", [ContentText $ s"sha-1"]),
-> 					(s"{http://jabber.org/protocol/caps}node", [ContentText $ s"xmpp:vitelity.soprani.ca"]),
-> 					-- gateway/sms//Soprani.ca Gateway to XMPP - Vitelity<jabber:iq:register<jabber:iq:version<vcard-temp<
-> 					(s"{http://jabber.org/protocol/caps}ver", [ContentText $ s"fM5iv/aMLmSbJBivCilUAI0MUFY="])
-> 				] []
-> 			]
-> 		}]
+> 	| Nothing <- XMPP.jidNode to = return [mkStanzaRec $ gatewayAvailable to from]
 
 If there is a valid localpart, then we might as well claim numbers are available.
 
-> 	| Just _ <- mapToVitelity to =
-> 		return [mkStanzaRec $ (XMPP.emptyPresence XMPP.PresenceAvailable) {
-> 			XMPP.presenceTo = Just from,
-> 			XMPP.presenceFrom = Just to,
-> 			XMPP.presencePayloads = [
-> 				Element (s"{http://jabber.org/protocol/caps}c") [
-> 					(s"{http://jabber.org/protocol/caps}hash", [ContentText $ s"sha-1"]),
-> 					(s"{http://jabber.org/protocol/caps}node", [ContentText $ s"xmpp:vitelity.sgx.soprani.ca"]),
-> 					-- client/sms//Soprani.ca Gateway to XMPP - Vitelity<jabber:iq:version<
-> 					(s"{http://jabber.org/protocol/caps}ver", [ContentText $ s"Xyjv2vDeRUglY9xigEbdkBIkPSE="])
-> 				] []
-> 			]
-> 		}]
+> 	| Just _ <- mapToVitelity to = return [mkStanzaRec $ telAvailable to from]
 
 Everything else is an invalid JID, so return an error.
 
@@ -248,7 +224,8 @@ Auto-approve presence subscription requests sent to the gateway itself, and also
 > 				mkStanzaRec $ (XMPP.emptyPresence XMPP.PresenceSubscribe) {
 > 					XMPP.presenceTo = Just from,
 > 					XMPP.presenceFrom = Just to
-> 				}
+> 				},
+> 				mkStanzaRec $ gatewayAvailable to from
 > 			]
 
 Auto-approve presence subscription requests sent to valid phone numbers.
@@ -259,7 +236,8 @@ Auto-approve presence subscription requests sent to valid phone numbers.
 > 				mkStanzaRec $ (XMPP.emptyPresence XMPP.PresenceSubscribed) {
 > 					XMPP.presenceTo = Just from,
 > 					XMPP.presenceFrom = Just to
-> 				}
+> 				},
+> 				mkStanzaRec $ telAvailable to from
 > 			]
 
 Everything else is an invalid JID, so return an error.
@@ -684,6 +662,36 @@ Get whatever is at (or Nothing if the key does not exist) the key corresponding 
 Then try to parse the string as VitelityCredentials.
 
 > 	return (readZ =<< maybeCredentialString)
+
+We need to define the available presence stanzas for the gateway and for valid phone numbers.  Includes XEP-0115 information to help improve service discovery efficiency.
+
+> gatewayAvailable :: XMPP.JID -> XMPP.JID -> XMPP.Presence
+> gatewayAvailable from to = (XMPP.emptyPresence XMPP.PresenceAvailable) {
+> 	XMPP.presenceTo = Just to,
+> 	XMPP.presenceFrom = Just from,
+> 	XMPP.presencePayloads = [
+> 		Element (s"{http://jabber.org/protocol/caps}c") [
+> 			(s"{http://jabber.org/protocol/caps}hash", [ContentText $ s"sha-1"]),
+> 			(s"{http://jabber.org/protocol/caps}node", [ContentText $ s"xmpp:vitelity.soprani.ca"]),
+> 			-- gateway/sms//Soprani.ca Gateway to XMPP - Vitelity<jabber:iq:register<jabber:iq:version<vcard-temp<
+> 			(s"{http://jabber.org/protocol/caps}ver", [ContentText $ s"fM5iv/aMLmSbJBivCilUAI0MUFY="])
+> 		] []
+> 	]
+> }
+
+> telAvailable :: XMPP.JID -> XMPP.JID -> XMPP.Presence
+> telAvailable from to = (XMPP.emptyPresence XMPP.PresenceAvailable) {
+> 	XMPP.presenceTo = Just to,
+> 	XMPP.presenceFrom = Just from,
+> 	XMPP.presencePayloads = [
+> 		Element (s"{http://jabber.org/protocol/caps}c") [
+> 			(s"{http://jabber.org/protocol/caps}hash", [ContentText $ s"sha-1"]),
+> 			(s"{http://jabber.org/protocol/caps}node", [ContentText $ s"xmpp:vitelity.sgx.soprani.ca"]),
+> 			-- client/sms//Soprani.ca Gateway to XMPP - Vitelity<jabber:iq:version<
+> 			(s"{http://jabber.org/protocol/caps}ver", [ContentText $ s"Xyjv2vDeRUglY9xigEbdkBIkPSE="])
+> 		] []
+> 	]
+> }
 
 We also want a way to format the XMPP stanzas we use to send SMS (both to Vitelity, and from Vitelity to subscribers).
 
