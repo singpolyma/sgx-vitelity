@@ -248,26 +248,42 @@ Everything else is an invalid JID, so return an error.
 
 If we match an iq "get" requesting the registration form, then deliver back the form in XEP-0077 format.
 
-> handleInboundStanza _ _ (XMPP.ReceivedIQ iq@(XMPP.IQ {
+> handleInboundStanza db _ (XMPP.ReceivedIQ iq@(XMPP.IQ {
 > 	XMPP.iqType = XMPP.IQGet,
 > 	XMPP.iqFrom = Just from,
 > 	XMPP.iqTo = Just to@(XMPP.JID { XMPP.jidNode = Nothing }),
 > 	XMPP.iqPayload = Just p
 > }))
-> 	| [_] <- isNamed (s"{jabber:iq:register}query") p =
+> 	| [_] <- isNamed (s"{jabber:iq:register}query") p = do
+
+We look to see if the user is already registered, so we can tell them so in the response.
+
+> 		maybeCreds <- fetchVitelityCredentials db from
 > 		return [mkStanzaRec $ iq {
 > 			XMPP.iqTo = Just from,
 > 			XMPP.iqFrom = Just to,
 > 			XMPP.iqType = XMPP.IQResult,
-> 			XMPP.iqPayload = Just $ Element (s"{jabber:iq:register}query") []
-> 				[
-> 					NodeElement $ Element (s"{jabber:iq:register}instructions") [] [
-> 						NodeContent $ ContentText $ s"Please enter your DID and the password you set for Vitelity's s.ms service."
-> 					],
-> 					NodeElement $ Element (s"{jabber:iq:register}phone") [] [],
-> 					NodeElement $ Element (s"{jabber:iq:register}password") [] []
->				]
+> 			XMPP.iqPayload = Just $ Element (s"{jabber:iq:register}query") [] (payload maybeCreds)
 >		}]
+> 	where
+> 	payload (Just (VitelityCredentials did _)) =
+> 		[
+> 			NodeElement $ Element (s"{jabber:iq:register}registered") [] [],
+> 			NodeElement $ Element (s"{jabber:iq:register}instructions") [] [
+> 				NodeContent $ ContentText $ s"You are currently registered with the following DID. You may enter a new DID and Vitelity s.ms password to change your registration."
+> 			],
+> 			NodeElement $ Element (s"{jabber:iq:register}phone") [] [NodeContent $ ContentText did],
+> 			NodeElement $ Element (s"{jabber:iq:register}password") [] []
+>		]
+
+> 	payload _ =
+> 		[
+> 			NodeElement $ Element (s"{jabber:iq:register}instructions") [] [
+> 				NodeContent $ ContentText $ s"Please enter your DID and the password you set for Vitelity's s.ms service."
+> 			],
+> 			NodeElement $ Element (s"{jabber:iq:register}phone") [] [],
+> 			NodeElement $ Element (s"{jabber:iq:register}password") [] []
+>		]
 
 If we match an iq "set" with a completed registration form, then register the user.
 
