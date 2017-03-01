@@ -18,6 +18,7 @@ Import all the things!
 > import Control.Concurrent
 > import Control.Concurrent.STM
 > import Data.Foldable (forM_)
+> import Control.Monad.Loops (untilM_)
 > import Data.Time (getCurrentTime)
 > import Control.Error (exceptT, fmapLT, runExceptT, syncIO, readZ, ExceptT, hoistEither)
 > import UnexceptionalIO (Unexceptional)
@@ -293,10 +294,19 @@ If we match an iq "set" with a completed registration form, then register the us
 > 	XMPP.iqTo = Just (XMPP.JID { XMPP.jidNode = Nothing }),
 > 	XMPP.iqPayload = Just p
 > }))
+
+If there is a <remove /> tag, the user is deleting an existing registration.  Fetch the existing credentials before erasing them from the database and then let the vitelityManager know to remove the subscription and return success to the user.
+
+> 	| [query] <- isNamed (s"{jabber:iq:register}query") p,
+> 	  [_] <- isNamed (s"{jabber:iq:register}remove") =<< elementChildren query = do
+> 		maybeCreds <- fetchVitelityCredentials db from
+> 		True <- TC.runTCM $ TC.out db ("registration\0" ++ textToString (bareTxt from))
+> 		forM_ maybeCreds $ atomically . sendVitelityCommand . VitelityRemoveRegistration from
+> 		return [mkStanzaRec $ iqReply Nothing iq]
+
+Otherwise, extract the values from the completed form.
+
 > 	| [query] <- isNamed (s"{jabber:iq:register}query") p =
-
-Extract the values from the completed form.
-
 > 		let
 > 			phone = mconcat . elementText <$> listToMaybe
 > 				(isNamed (s"{jabber:iq:register}phone") =<< elementChildren query)
@@ -488,11 +498,15 @@ The most obvious command is one to send an SMS.  We'll need the relevant credent
 
 We also need a way to tell the manager where to route incoming SMSs from a given connection to Vitelity.
 
-> 	VitelityRegistration [XMPP.JID] VitelityCredentials
+> 	VitelityRegistration [XMPP.JID] VitelityCredentials |
+
+And when an existing registration is removed.
+
+> 	VitelityRemoveRegistration XMPP.JID VitelityCredentials
 
 We also define a simple type synonym for the Map that holds our active connections to Vitelity.  The credentials act as the key into the Map, and for each key we store two actions: one to send a stanza out, and one to add a JID to the list of subscribers that get incoming SMSs.
 
-> type VitelityManagerState = Map VitelityCredentials (StanzaRec -> STM (), XMPP.JID -> STM ())
+> type VitelityManagerState = Map VitelityCredentials (StanzaRec -> STM (), XMPP.JID -> STM (), XMPP.JID -> STM Bool)
 
 The manager itself is a forever recursion that waits on commands coming in and handles one at a time using `oneVitelityCommand`.  The result of `oneVitelityCommand` becomes the new Map for the next iteration.
 
@@ -511,7 +525,7 @@ Here we actually handle the `vitelityManager` commands.
 
 If we are sending an SMS and a session for those credentials is already connected, format the SMS into an XMPP Stanza and write it to the correct session.  No change to the sessions map, so just return the one we have.
 
-> 	| Just (sendToVitelity, _) <- Map.lookup creds vitelitySessions = do
+> 	| Just (sendToVitelity, _, _) <- Map.lookup creds vitelitySessions = do
 > 		atomically $ sendToVitelity $ mkStanzaRec $ (mkSMS "jabber:client" to body) { XMPP.messageID = show <$> smsID }
 > 		return vitelitySessions
 
@@ -525,7 +539,7 @@ Otherwise, we have never connected for this DID.  Highly irregular.  Log this st
 When asked to create a registration, first check if we already have an active session for these credentials (could happen if multiple remote JIDs are all registered through the same Vitelity DID).  If so, just add new subscribers to that session.
 
 > oneVitelityCommand mapToComponent sendToComponent vitelitySessions (VitelityRegistration jids creds@(VitelityCredentials did _))
-> 	| Just (_, addJidSubscription) <- Map.lookup creds vitelitySessions = do
+> 	| Just (_, addJidSubscription, _) <- Map.lookup creds vitelitySessions = do
 > 		log "oneVitelityCommand" ("New subscription for", bareJids, did)
 > 		atomically $ mapM_ addJidSubscription bareJids
 > 		return vitelitySessions
@@ -534,15 +548,31 @@ Otherwise, we need to actually start up a new session.  Then add the subscribers
 
 > 	| otherwise = do
 > 		log "oneVitelityCommand" ("New registration for", bareJids, did)
-> 		session@(_, addJidSubscription) <- vitelitySession mapToComponent sendToComponent creds
+> 		session@(_, addJidSubscription, _) <- vitelitySession mapToComponent sendToComponent creds
 > 		atomically $ mapM_ addJidSubscription bareJids
 > 		return $! Map.insert creds session vitelitySessions
 > 	where
 > 	bareJids = mapMaybe (XMPP.parseJID . bareTxt) jids
 
+When we are asked to remove a registration, we need to get the session and bare JID in order to remove the subscription.
+
+> oneVitelityCommand _ _ vitelitySessions (VitelityRemoveRegistration jid creds@(VitelityCredentials did _))
+> 	| Just (_, _, delJidSubscription) <- Map.lookup creds vitelitySessions,
+> 	  Just bareJid <- XMPP.parseJID $ bareTxt jid = do
+> 		log "oneVitelityCommand" ("Remove registration for", bareJid, did)
+
+Delete the subscription and find out if there are no more.  If there are no more, then delete the session.
+
+> 		noMoreSubscriptions <- atomically $ delJidSubscription bareJid
+> 		return $! if noMoreSubscriptions then Map.delete creds vitelitySessions else vitelitySessions
+
+If the session cannot be found, then there's no need to remove the subscription I guess.
+
+> 	| otherwise = return vitelitySessions
+
 Here we take some `VitelityCredentials` and actually create the XMPP connection, setting up a bunch of last-ditch exception handling and forever-reconnection logic while we're at it.
 
-> vitelitySession :: (XMPP.JID -> Maybe XMPP.JID) -> (StanzaRec -> STM ()) -> VitelityCredentials -> IO (StanzaRec -> STM (), XMPP.JID -> STM ())
+> vitelitySession :: (XMPP.JID -> Maybe XMPP.JID) -> (StanzaRec -> STM ()) -> VitelityCredentials -> IO (StanzaRec -> STM (), XMPP.JID -> STM (), XMPP.JID -> STM Bool)
 > vitelitySession mapToComponent sendToComponent creds@(VitelityCredentials did _) = do
 
 The outbound stanza channel is similar to what we used before for the component.  Subscriber JIDs are just stored in a threadsafe mutable variable for now.
@@ -550,9 +580,9 @@ The outbound stanza channel is similar to what we used before for the component.
 > 	sendStanzas <- newTQueueIO
 > 	subscriberJids <- newTVarIO []
 
-Loop forever in case the connection dies, log any result.  Connect to the server and then delegate responsability for the connection to a hanlder.
+Loop forever (or, stop if we are out of subscribers) in case the connection dies, log any result.  Connect to the server and then delegate responsability for the connection to a handler.
 
-> 	void $ forkIO $ forever $ do
+> 	void $ forkIO $ flip untilM_ (null <$> atomically (readTVar subscriberJids)) $ do
 > 		log "vitelitySession" ("Starting", did)
 > 		result <- runExceptT $ vitelityConnect creds
 > 			(vitelityClient (readTQueue sendStanzas) (readTVar subscriberJids) mapToComponent sendToComponent)
@@ -577,9 +607,13 @@ In the case of authentication failure, send a headline to all subscribers tellin
 > 						})
 > 			_ -> log "vitelitySession" ("Ended", result)
 
-The caller doesn't need to know about our internals, just pass back usable actions to allow adding to the stanza channel and the subscriber list.
+The caller doesn't need to know about our internals, just pass back usable actions to allow adding to the stanza channel and adding/removing items to/from the subscriber list.
 
-> 	return (writeTQueue sendStanzas, modifyTVar' subscriberJids . (:))
+> 	return (
+> 			writeTQueue sendStanzas,
+> 			modifyTVar' subscriberJids . (:),
+> 			(>> fmap null (readTVar subscriberJids)) . modifyTVar subscriberJids . filter . (/=)
+> 		)
 
 Once a particular connection to Vitelity has been established, control is trasferred here.
 

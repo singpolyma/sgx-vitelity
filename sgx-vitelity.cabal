@@ -30,6 +30,7 @@ executable sgx-vitelity
                 basic-prelude >= 0.3.4.0,
                 containers,
                 errors >= 2.1.0,
+                monad-loops,
                 monads-tf,
                 network,
                 network-protocol-xmpp >= 0.4.8,
